@@ -1,0 +1,81 @@
+{
+  "id": "dnd5e",
+  "title": "Dungeons & Dragons Fifth Edition",
+  "description": "The world's greatest roleplaying game",
+  "version": "2.4.1",
+  "compatibility": {
+    "minimum": "11",
+    "verified": "12.331"
+  },
+  "documentTypes": {
+    "Actor": {
+      "character": {
+        "htmlFields": [
+          "system.details.biography.value"
+        ]
+      },
+      "npc": {
+        "htmlFields": [
+          "system.details.biography.value"
+        ]
+      },
+      "vehicle": {
+        "htmlFields": [
+          "system.details.biography.value"
+        ]
+      }
+    },
+    "Item": {
+      "weapon": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "equipment": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "consumable": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "spell": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "feat": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "class": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "subclass": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "background": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      },
+      "race": {
+        "htmlFields": [
+          "system.description.value"
+        ]
+      }
+    },
+    "JournalEntry": {},
+    "Macro": {},
+    "RollTable": {},
+    "Scene": {},
+    "Playlist": {}
+  }
+}

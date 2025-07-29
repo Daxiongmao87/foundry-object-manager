@@ -1,0 +1,30 @@
+{
+  "name": "foundry-object-validator",
+  "version": "1.0.0",
+  "description": "Command-line validator for FoundryVTT JSON objects against system schemas",
+  "main": "foundry-validator.mjs",
+  "type": "module",
+  "bin": {
+    "foundry-validator": "./foundry-validator.mjs"
+  },
+  "scripts": {
+    "start": "node foundry-validator.mjs",
+    "test": "node test.mjs",
+    "validate": "node foundry-validator.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "foundryvtt",
+    "validation",
+    "json",
+    "cli",
+    "gaming",
+    "tabletop"
+  ],
+  "author": "FoundryVTT Object Validator",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}
