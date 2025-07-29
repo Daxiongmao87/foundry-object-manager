@@ -2,15 +2,15 @@
   "name": "foundry-object-validator",
   "version": "1.0.0",
   "description": "Command-line validator for FoundryVTT JSON objects against system schemas",
-  "main": "foundry-validator.mjs",
+  "main": "foundry-manager.mjs",
   "type": "module",
   "bin": {
-    "foundry-validator": "./foundry-validator.mjs"
+    "foundry-validator": "./foundry-manager.mjs"
   },
   "scripts": {
-    "start": "node foundry-validator.mjs",
+    "start": "node foundry-manager.mjs",
     "test": "node test.mjs",
-    "validate": "node foundry-validator.mjs"
+    "validate": "node foundry-manager.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

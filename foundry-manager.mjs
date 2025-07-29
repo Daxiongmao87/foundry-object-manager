@@ -189,6 +189,11 @@ EXIT CODES:
      * Main execution function
      */
     async run() {
+        if (process.argv.length === 2) {
+            this.showHelp();
+            process.exit(0);
+        }
+
         const args = this.parseArguments();
 
         if (args.help) {
@@ -589,7 +594,8 @@ EXIT CODES:
             properties: {
                 _id: {
                     type: 'string',
-                    pattern: '^[a-zA-Z0-9]{16}$',
+                    pattern: '^[a-zA-Z0-9]{16}
+,
                     description: 'Document ID'
                 },
                 name: {
