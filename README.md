@@ -16,6 +16,15 @@ This is a command-line tool for managing FoundryVTT objects, such as actors and 
     ```bash
     npm install
     ```
+3.  Create symbolic links to your FoundryVTT installation:
+    ```bash
+    # Link to FoundryVTT application files
+    ln -s /path/to/FoundryVTT/resources foundry-app
+    
+    # Link to FoundryVTT data directory
+    ln -s ~/.local/share/FoundryVTT/Data foundry-data
+    ```
+    Note: Adjust the paths according to your FoundryVTT installation location.
 
 ## Usage
 
@@ -76,6 +85,12 @@ node foundry-manager.mjs -s dnd5e -t actor -w my-world -r --details --limit 5
 node foundry-manager.mjs -s dnd5e -t item -w my-world -r --json 500
 ```
 
+## Important Notes
+
+- **FoundryVTT Validation**: This tool uses FoundryVTT's actual validation system. It does not create mock schemas or fallback validation.
+- **System Module Loading**: Some systems (like D&D 5e) have complex dependencies that may prevent full system-specific validation from loading. However, core document validation always works.
+- **Database Access**: Make sure FoundryVTT is not running when using this tool to avoid database conflicts.
+
 ## Development
 
 The project is structured into several modules:
@@ -83,7 +98,5 @@ The project is structured into several modules:
 -   `foundry-manager.mjs`: The main CLI entry point.
 -   `foundry-environment.mjs`: Sets up a minimal FoundryVTT environment.
 -   `system-discovery.mjs`: Discovers installed systems and their data models.
--   `schema-extractor.mjs`: Extracts validation schemas from FoundryVTT data models.
--   `validation-engine.mjs`: Validates JSON objects against the extracted schemas.
 -   `world-manager.mjs`: Handles interactions with FoundryVTT worlds.
--   `demo.mjs`: A demonstration script that shows how to use the validator.
+-   `demo.mjs`: A demonstration script that shows various use cases.

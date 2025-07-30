@@ -69,15 +69,16 @@ class SystemDiscovery {
 
         const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
         
-        // Extract document types from manifest
+        // Extract document types from manifest first
         const documentTypes = this.extractDocumentTypes(manifest);
         
-        // Load system to register DataModels
+        // Load system to register DataModels (for potential future use)
         try {
             await this.foundryEnv.loadSystem(systemId);
         } catch (error) {
             console.warn(`Failed to load system ${systemId}:`, error.message);
         }
+        
 
         const systemInfo = {
             id: systemId,
@@ -94,7 +95,7 @@ class SystemDiscovery {
     }
 
     /**
-     * Extract document types and subtypes from system manifest
+     * Extract document types from system manifest
      */
     extractDocumentTypes(manifest) {
         const documentTypes = {};
@@ -126,11 +127,21 @@ class SystemDiscovery {
         const objectTypes = {};
 
         for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
+            // Add base document type
             objectTypes[docType.toLowerCase()] = {
                 documentType: docType,
                 subtypes: config.subtypes,
                 description: this.getDocumentTypeDescription(docType)
             };
+            
+            // Add each subtype as a separate object type
+            for (const subtype of config.subtypes) {
+                objectTypes[subtype] = {
+                    documentType: docType,
+                    subtype: subtype,
+                    description: `${docType} of type '${subtype}'`
+                };
+            }
         }
 
         return objectTypes;
@@ -189,20 +200,23 @@ class SystemDiscovery {
      */
     async listSystemObjectTypes(systemId) {
         try {
-            const objectTypes = await this.getSystemObjectTypes(systemId);
+            const systemInfo = await this.getSystemInfo(systemId);
             
-            if (Object.keys(objectTypes).length === 0) {
+            if (Object.keys(systemInfo.documentTypes).length === 0) {
                 return `No object types found for system: ${systemId}`;
             }
 
             const output = [`Object types available in system '${systemId}':`, ''];
             
-            for (const [typeKey, config] of Object.entries(objectTypes)) {
-                output.push(`• ${typeKey} (${config.documentType})`);
-                output.push(`  ${config.description}`);
+            for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
+                output.push(`${docType} Document Types:`);
                 
                 if (config.subtypes.length > 0) {
-                    output.push(`  Subtypes: ${config.subtypes.join(', ')}`);
+                    for (const subtype of config.subtypes) {
+                        output.push(`  • ${subtype}`);
+                    }
+                } else {
+                    output.push(`  • ${docType.toLowerCase()} (base type)`);
                 }
                 output.push('');
             }
@@ -245,40 +259,17 @@ class SystemDiscovery {
     }
 
     /**
-     * Get DataModel class for a specific system document type
+     * Get FoundryVTT document class for a specific document type
      */
-    async getDataModel(systemId, documentType, subtype = null) {
-        await this.getSystemInfo(systemId); // Ensure system is loaded
+    async getDocumentClass(documentType) {
+        const documentPath = join(this.foundryEnv.resourcesPath, 'common', 'documents', `${documentType.toLowerCase()}.mjs`);
         
-        // Try to get the DataModel from CONFIG
-        const dataModel = this.foundryEnv.getDataModel(documentType, subtype);
-        
-        if (!dataModel) {
-            // If no specific subtype model, try to get the base document model
-            if (subtype) {
-                return this.getDataModel(systemId, documentType, null);
-            }
-            return null;
+        try {
+            const DocumentClass = await import(`file://${documentPath}`);
+            return DocumentClass.default;
+        } catch (error) {
+            throw new Error(`Failed to load document class ${documentType}: ${error.message}`);
         }
-
-        return dataModel;
-    }
-
-    /**
-     * Extract schema for a specific system document type
-     */
-    async extractSchemaForType(systemId, documentType, subtype = null) {
-        const dataModel = await this.getDataModel(systemId, documentType, subtype);
-        
-        if (!dataModel) {
-            throw new Error(
-                `No DataModel found for ${documentType}` + 
-                (subtype ? `.${subtype}` : '') + 
-                ` in system ${systemId}`
-            );
-        }
-
-        return this.foundryEnv.extractSchema(dataModel);
     }
 }
 

@@ -9,6 +9,8 @@ import { existsSync, readFileSync } from 'fs';
 import { readdir, stat, readFile } from 'fs/promises';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
+import pkg from 'classic-level';
+const { ClassicLevel } = pkg;
 
 class WorldManager {
     constructor(foundryEnv) {
@@ -120,6 +122,14 @@ class WorldManager {
     }
 
     /**
+     * Format document key for FoundryVTT database storage
+     */
+    formatDocumentKey(collectionType, documentId) {
+        // FoundryVTT uses keys like: !items!{id}, !actors!{id}, etc.
+        return `!${collectionType}!${documentId}`;
+    }
+
+    /**
      * Get LevelDB instance for a world collection
      * Note: This is a placeholder - would need actual LevelDB implementation
      */
@@ -130,9 +140,9 @@ class WorldManager {
             throw new Error(`Collection '${collectionType}' does not exist in world '${worldInfo.id}'`);
         }
 
-        // For now, we'll implement a file-based approach to demonstrate the concept
-        // In a full implementation, this would use the 'classic-level' package
-        return new MockLevelDB(dbPath);
+        // Use real LevelDB for actual database operations
+        const db = new ClassicLevel(dbPath, { valueEncoding: 'json' });
+        return db;
     }
 
     /**
@@ -143,8 +153,8 @@ class WorldManager {
             // Validate world and system compatibility
             const worldInfo = await this.validateWorldSystem(worldId, options.systemId || 'unknown');
             
-            // Prepare document data
-            const documentData = this.prepareDocumentForInsertion(validatedData, options);
+            // Document data is already prepared by FoundryVTT's document creation process
+            const documentData = validatedData;
             
             // Get collection name (lowercase document type)
             const collectionType = this.getCollectionName(documentType);
@@ -157,8 +167,13 @@ class WorldManager {
             // Get database connection
             const db = await this.getLevelDB(worldInfo, collectionType);
             
-            // Insert document
-            const insertResult = await db.put(documentData._id, documentData);
+            try {
+                // Insert document with proper FoundryVTT key format
+                const dbKey = this.formatDocumentKey(collectionType, documentData._id);
+                await db.put(dbKey, documentData);
+            } finally {
+                await db.close();
+            }
             
             return {
                 success: true,
@@ -180,33 +195,69 @@ class WorldManager {
     }
 
     /**
-     * Prepare document data for insertion
+     * Prepare document data for insertion using FoundryVTT's document creation process
      */
-    prepareDocumentForInsertion(validatedData, options = {}) {
-        const now = Date.now();
-        const userId = options.userId || 'CLI_USER_ID';
-
-        // Ensure required fields are present
-        const documentData = {
-            ...validatedData,
-            _id: validatedData._id || this.generateDocumentId(),
-            folder: validatedData.folder || null,
-            sort: validatedData.sort || 0,
-            ownership: validatedData.ownership || { default: 0 },
-            flags: validatedData.flags || {},
-            _stats: {
-                compendiumSource: null,
-                duplicateSource: null,
-                coreVersion: options.coreVersion || "12.331",
-                systemId: options.systemId || "unknown",
-                systemVersion: options.systemVersion || "1.0.0",
-                createdTime: now,
-                modifiedTime: now,
-                lastModifiedBy: userId
+    async prepareDocumentForInsertion(validatedData, documentType, options = {}) {
+        try {
+            // Import the actual FoundryVTT document class
+            const documentPath = join(this.foundryEnv.resourcesPath, 'common', 'documents', `${documentType.toLowerCase()}.mjs`);
+            
+            if (existsSync(documentPath)) {
+                const DocumentClass = await import(`file://${documentPath}`);
+                const BaseDocument = DocumentClass.default;
+                
+                if (BaseDocument) {
+                    // Use FoundryVTT's document creation process
+                    const now = Date.now();
+                    const userId = options.userId || 'CLI_USER_ID';
+                    
+                    // Let FoundryVTT create the proper document structure
+                    const documentData = {
+                        ...validatedData,
+                        _id: validatedData._id || this.generateDocumentId(),
+                        _stats: {
+                            compendiumSource: null,
+                            duplicateSource: null,
+                            coreVersion: options.coreVersion || "12.331",
+                            systemId: options.systemId || "unknown",
+                            systemVersion: options.systemVersion || "1.0.0",
+                            createdTime: now,
+                            modifiedTime: now,
+                            lastModifiedBy: userId
+                        }
+                    };
+                    
+                    // Create a temporary document instance to get proper defaults
+                    const tempDoc = new BaseDocument(documentData, {});
+                    // Use the document's data to get proper structure with defaults
+                    return tempDoc.toObject();
+                }
             }
-        };
+            
+            throw new Error(`Document class not found: ${documentType}`);
+            
+        } catch (error) {
+            throw new Error(`Failed to use FoundryVTT document class for ${documentType}: ${error.message}`);
+        }
+    }
+    
 
-        return documentData;
+    /**
+     * Retrieve all documents from a LevelDB database
+     */
+    async getAllDocuments(db) {
+        const documents = [];
+        
+        try {
+            for await (const [key, value] of db.iterator()) {
+                documents.push(value);
+            }
+        } catch (error) {
+            console.warn('Failed to retrieve documents from database:', error.message);
+        }
+        // Don't close here - let the caller handle closing
+        
+        return documents;
     }
 
     /**
@@ -272,8 +323,13 @@ class WorldManager {
             // Get database connection
             const db = await this.getLevelDB(worldInfo, collectionType);
             
-            // Retrieve all documents from the collection
-            const documents = await db.getAll();
+            let documents = [];
+            try {
+                // Retrieve all documents from the collection
+                documents = await this.getAllDocuments(db);
+            } finally {
+                await db.close();
+            }
             
             // Apply search filters
             let filteredDocuments = documents;
@@ -450,116 +506,38 @@ class WorldManager {
             return { valid: false, error: error.message };
         }
     }
-}
-
-/**
- * Mock LevelDB implementation for demonstration
- * In production, this would use the 'classic-level' package
- */
-class MockLevelDB {
-    constructor(dbPath) {
-        this.dbPath = dbPath;
-        this.mockData = this.loadMockData();
-    }
 
     /**
-     * Load mock data from the actual world files for demonstration
+     * Get the Game Master user ID from the world
      */
-    loadMockData() {
+    async getGMUserId(worldId) {
         try {
-            // Try to read actual data from the test world for demonstration
-            if (this.dbPath.includes('actors')) {
-                return [
-                    {
-                        _id: "SPpum9vlNkX6NqzA",
-                        name: "Testorolono",
-                        type: "character",
-                        img: "icons/svg/mystery-man.svg",
-                        system: {
-                            attributes: {
-                                hp: { value: 0, max: null }
-                            },
-                            details: {
-                                biography: { value: "", public: "" }
-                            }
-                        },
-                        _stats: {
-                            createdTime: 1753739913084,
-                            modifiedTime: 1753754421254,
-                            systemId: "dnd5e",
-                            systemVersion: "4.4.4"
-                        }
+            const worldInfo = await this.getWorldInfo(worldId);
+            const usersDb = await this.getLevelDB(worldInfo, 'users');
+            
+            try {
+                // Find the first GM user (role 4 = GAMEMASTER)
+                for await (const [key, user] of usersDb.iterator()) {
+                    if (user.role === 4) { // GAMEMASTER role
+                        return user._id;
                     }
-                ];
-            } else if (this.dbPath.includes('items')) {
-                return [
-                    {
-                        _id: "MockItem123456",
-                        name: "Magic Sword",
-                        type: "weapon",
-                        img: "icons/weapons/sword.png",
-                        system: {
-                            description: { value: "A magical blade" },
-                            damage: { parts: [["1d8", "slashing"]] }
-                        },
-                        _stats: {
-                            createdTime: Date.now(),
-                            systemId: "dnd5e"
-                        }
-                    },
-                    {
-                        _id: "MockItem789012",
-                        name: "Healing Potion",
-                        type: "consumable",
-                        img: "icons/potions/healing.png",
-                        system: {
-                            description: { value: "Restores health" }
-                        },
-                        _stats: {
-                            createdTime: Date.now(),
-                            systemId: "dnd5e"
-                        }
-                    }
-                ];
+                }
+                
+                // If no GM found, return the first user
+                for await (const [key, user] of usersDb.iterator()) {
+                    return user._id;
+                }
+                
+                // Fallback: generate a 16-char ID if no users exist
+                return this.generateDocumentId();
+                
+            } finally {
+                await usersDb.close();
             }
-            return [];
         } catch (error) {
-            return [];
+            // Fallback: generate a 16-char ID if users collection doesn't exist
+            return this.generateDocumentId();
         }
-    }
-
-    async put(key, value) {
-        // In a real implementation, this would write to LevelDB
-        console.log(`[MOCK] Would insert document with key: !actors!${key}`);
-        console.log(`[MOCK] Document data: ${JSON.stringify(value, null, 2).substring(0, 200)}...`);
-        
-        // Add to mock data for search functionality
-        this.mockData.push(value);
-        
-        return {
-            key: key,
-            success: true,
-            timestamp: Date.now()
-        };
-    }
-
-    async get(key) {
-        // Mock retrieval - find by ID
-        const document = this.mockData.find(doc => doc._id === key);
-        if (!document) {
-            throw new Error(`Document not found: ${key}`);
-        }
-        return document;
-    }
-
-    async getAll() {
-        // Return all documents in the collection
-        return [...this.mockData];
-    }
-
-    async close() {
-        // Mock close operation
-        return true;
     }
 }
 

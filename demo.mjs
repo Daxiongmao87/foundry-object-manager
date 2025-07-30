@@ -13,12 +13,12 @@ class ValidatorDemo {
             {
                 title: 'List Available Systems',
                 description: 'Show what FoundryVTT systems are installed and available for validation',
-                command: ['node', 'foundry-validator.mjs', '-l']
+                command: ['node', 'foundry-manager.mjs', '-l']
             },
             {
                 title: 'Validate Valid Actor Object',
                 description: 'Validate a properly formatted D&D 5e character actor',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'actor', JSON.stringify({
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'actor', JSON.stringify({
                     name: "Thorin Oakenshield",
                     type: "character",
                     img: "characters/thorin.png",
@@ -42,7 +42,7 @@ class ValidatorDemo {
             {
                 title: 'Validate Invalid Actor Object (Missing Required Field)',
                 description: 'Show validation failure when required "name" field is missing',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'actor', JSON.stringify({
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'actor', JSON.stringify({
                     type: "character",
                     system: {
                         attributes: {
@@ -57,7 +57,7 @@ class ValidatorDemo {
             {
                 title: 'Validate Item Object',
                 description: 'Validate a D&D 5e magical weapon item',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'item', JSON.stringify({
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'item', JSON.stringify({
                     name: "Orcrist",
                     type: "weapon",
                     img: "items/orcrist.png",
@@ -66,11 +66,18 @@ class ValidatorDemo {
                             value: "An ancient elven blade that glows blue when orcs are near"
                         },
                         damage: {
-                            parts: [["1d8 + @mod", "slashing"]]
+                            base: {
+                                number: 1,
+                                denomination: 8,
+                                bonus: "@mod",
+                                types: ["slashing"],
+                                custom: { enabled: false, formula: "" }
+                            }
                         },
-                        properties: {
-                            magic: true,
-                            finesse: true
+                        properties: ["mgc", "fin"],  // magic, finesse
+                        type: {
+                            value: "martialM",
+                            baseItem: "longsword"
                         }
                     }
                 })]
@@ -78,12 +85,12 @@ class ValidatorDemo {
             {
                 title: 'List Available Worlds',
                 description: 'Show what FoundryVTT worlds are available for insertion',
-                command: ['node', 'foundry-validator.mjs', '-l', '--listWorlds']
+                command: ['node', 'foundry-manager.mjs', '-l', '--listWorlds']
             },
             {
                 title: 'Validate and Insert Actor into World',
                 description: 'Validate a character and insert it directly into a FoundryVTT world',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-i', JSON.stringify({
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-i', JSON.stringify({
                     name: "Bilbo Baggins",
                     type: "character",
                     img: "characters/bilbo.png",
@@ -107,22 +114,22 @@ class ValidatorDemo {
             {
                 title: 'Search for Actors in World',
                 description: 'Search and retrieve all actor objects from a FoundryVTT world',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-r']
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-r']
             },
             {
                 title: 'Search with Wildcard Pattern',
                 description: 'Search for actors with names matching a wildcard pattern',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-r', '--name', 'Test*']
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'actor', '-w', 'test-world', '-r', '--name', 'Test*']
             },
             {
                 title: 'Search Items with Details and JSON',
                 description: 'Search for items with detailed information and JSON output',
-                command: ['node', 'foundry-validator.mjs', '-s', 'dnd5e', '-t', 'item', '-w', 'test-world', '-r', '--details', '--json', '300']
+                command: ['node', 'foundry-manager.mjs', '-s', 'dnd5e', '-t', 'item', '-w', 'test-world', '-r', '--details', '--json', '300']
             },
             {
                 title: 'Show Help Message',
                 description: 'Display the complete usage information',
-                command: ['node', 'foundry-validator.mjs', '--help']
+                command: ['node', 'foundry-manager.mjs', '--help']
             }
         ];
     }

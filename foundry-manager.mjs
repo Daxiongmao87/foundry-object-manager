@@ -7,18 +7,16 @@
 
 import { parseArgs } from 'util';
 import { existsSync } from 'fs';
+import { join } from 'path';
+import { randomBytes } from 'crypto';
 import FoundryEnvironment from './foundry-environment.mjs';
 import SystemDiscovery from './system-discovery.mjs';
-import SchemaExtractor from './schema-extractor.mjs';
-import ValidationEngine from './validation-engine.mjs';
 import WorldManager from './world-manager.mjs';
 
 class FoundryValidator {
     constructor() {
         this.foundryEnv = new FoundryEnvironment();
         this.systemDiscovery = new SystemDiscovery(this.foundryEnv);
-        this.schemaExtractor = new SchemaExtractor(this.foundryEnv);
-        this.validationEngine = new ValidationEngine();
         this.worldManager = new WorldManager(this.foundryEnv);
     }
 
@@ -397,48 +395,22 @@ EXIT CODES:
 
             const systemInfo = await this.systemDiscovery.getSystemInfo(system);
             
-            // Get base document schema
-            const baseSchema = await this.extractDocumentSchema(documentType);
-            
-            // Get type-specific schema if available
-            let typeSchema = null;
-            if (validation.subtypes.includes(type)) {
-                try {
-                    typeSchema = await this.systemDiscovery.extractSchemaForType(system, documentType, type);
-                } catch (error) {
-                    if (verbose) {
-                        console.warn(`Could not extract type-specific schema for ${type}: ${error.message}`);
-                    }
-                }
-            }
-
-            // Create complete validation schema
-            const completeSchema = this.schemaExtractor.createCompleteSchema(baseSchema, typeSchema);
-
             if (verbose) {
-                console.log('Schema extracted successfully');
-                console.log('Validating JSON object...');
+                console.log('Loading FoundryVTT document class...');
             }
 
-            // Perform validation
-            const result = this.validationEngine.validate(jsonString, completeSchema, '', {
-                coerceTypes: true
+            // Get the actual GM user ID from the world
+            const gmUserId = await this.worldManager.getGMUserId(world);
+            
+            // Use FoundryVTT's actual document creation process
+            const documentData = await this.createFoundryDocument(jsonString, documentType, {
+                systemId: system,
+                systemVersion: systemInfo.version,
+                userId: gmUserId
             });
 
-            if (!result.valid) {
-                console.error('✗ Validation failed - cannot insert invalid object\n');
-                console.error('Errors:');
-                result.errors.forEach(error => {
-                    console.error(`  ${error.path}: ${error.message}`);
-                    if (error.value !== undefined) {
-                        console.error(`    Received: ${JSON.stringify(error.value)}`);
-                    }
-                });
-                process.exit(1);
-            }
-
             if (verbose) {
-                console.log('✓ Validation successful');
+                console.log('✓ Document created with FoundryVTT validation');
                 console.log('Inserting into world...');
             }
 
@@ -446,7 +418,7 @@ EXIT CODES:
             const insertResult = await this.worldManager.insertDocument(
                 world, 
                 documentType, 
-                result.normalizedData,
+                documentData,
                 {
                     systemId: system,
                     systemVersion: systemInfo.version,
@@ -462,7 +434,7 @@ EXIT CODES:
                 
                 if (verbose) {
                     console.log('\nInserted JSON:');
-                    console.log(this.validationEngine.prettifyJSON(insertResult.insertedData));
+                    console.log(JSON.stringify(insertResult.insertedData, null, 2));
                 }
                 
                 process.exit(0);
@@ -501,7 +473,6 @@ EXIT CODES:
         const documentType = validation.documentType;
 
         try {
-            // Load system and extract schema
             if (verbose) {
                 console.log(`Loading system: ${system}`);
                 console.log(`Document type: ${documentType}`);
@@ -509,70 +480,25 @@ EXIT CODES:
 
             const systemInfo = await this.systemDiscovery.getSystemInfo(system);
             
-            // Get base document schema
-            const baseSchema = await this.extractDocumentSchema(documentType);
-            
-            // Get type-specific schema if available
-            let typeSchema = null;
-            if (validation.subtypes.includes(type)) {
-                try {
-                    typeSchema = await this.systemDiscovery.extractSchemaForType(system, documentType, type);
-                } catch (error) {
-                    if (verbose) {
-                        console.warn(`Could not extract type-specific schema for ${type}: ${error.message}`);
-                    }
-                }
-            }
-
-            // Create complete validation schema
-            const completeSchema = this.schemaExtractor.createCompleteSchema(baseSchema, typeSchema);
-
             if (verbose) {
-                console.log('Schema extracted successfully');
-                console.log('Validating JSON object...');
+                console.log('Creating document with FoundryVTT validation...');
             }
 
-            // Perform validation
-            const result = this.validationEngine.validate(jsonString, completeSchema, '', {
-                coerceTypes: true
+            // Use FoundryVTT's actual document creation process (validation only, no world context)
+            const documentData = await this.createFoundryDocument(jsonString, documentType, {
+                systemId: system,
+                systemVersion: systemInfo.version,
+                userId: 'VALIDATION_ONLY_16CH'
             });
 
-            // Output results
-            if (result.valid) {
-                console.log('✓ Validation successful');
-                
-                if (verbose) {
-                    console.log('\nNormalized JSON:');
-                }
-                console.log(this.validationEngine.prettifyJSON(result.normalizedData));
-                
-                if (result.warnings.length > 0) {
-                    console.log('\nWarnings:');
-                    result.warnings.forEach(warning => {
-                        console.log(`  ${warning.path}: ${warning.message}`);
-                    });
-                }
-                
-                process.exit(0);
-            } else {
-                console.error('✗ Validation failed\n');
-                console.error('Errors:');
-                result.errors.forEach(error => {
-                    console.error(`  ${error.path}: ${error.message}`);
-                    if (error.value !== undefined) {
-                        console.error(`    Received: ${JSON.stringify(error.value)}`);
-                    }
-                });
-                
-                if (result.warnings.length > 0) {
-                    console.log('\nWarnings:');
-                    result.warnings.forEach(warning => {
-                        console.log(`  ${warning.path}: ${warning.message}`);
-                    });
-                }
-                
-                process.exit(1);
+            console.log('✓ Validation successful');
+            
+            if (verbose) {
+                console.log('\nValidated and normalized JSON:');
             }
+            console.log(JSON.stringify(documentData, null, 2));
+            
+            process.exit(0);
 
         } catch (error) {
             console.error(`Validation error: ${error.message}`);
@@ -584,70 +510,91 @@ EXIT CODES:
     }
 
     /**
-     * Extract schema for a base document type
+     * Create a document using FoundryVTT's actual document creation process
      */
-    async extractDocumentSchema(documentType) {
-        // This would extract the base document schema from FoundryVTT core
-        // For now, return a basic schema structure
-        const baseSchema = {
-            type: 'object',
-            properties: {
-                _id: {
-                    type: 'string',
-                    pattern: '^[a-zA-Z0-9]{16}
-,
-                    description: 'Document ID'
-                },
-                name: {
-                    type: 'string',
-                    minLength: 1,
-                    description: 'Document name'
-                },
-                img: {
-                    type: 'string',
-                    description: 'Image path'
-                },
-                type: {
-                    type: 'string',
-                    description: 'Document subtype'
-                },
-                system: {
-                    type: 'object',
-                    description: 'System-specific data',
-                    additionalProperties: true
+    async createFoundryDocument(jsonString, documentType, options = {}) {
+        try {
+            // Parse the input JSON
+            let inputData;
+            try {
+                inputData = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
+            } catch (error) {
+                throw new Error(`Invalid JSON: ${error.message}`);
+            }
+
+            // Import the actual FoundryVTT document class
+            const documentPath = join(this.foundryEnv.resourcesPath, 'common', 'documents', `${documentType.toLowerCase()}.mjs`);
+            
+            if (!existsSync(documentPath)) {
+                throw new Error(`Document class not found: ${documentType}`);
+            }
+            
+            const DocumentClass = await import(`file://${documentPath}`);
+            const BaseDocument = DocumentClass.default;
+            
+            if (!BaseDocument) {
+                throw new Error(`Invalid document class: ${documentType}`);
+            }
+
+            // Add required fields with proper FoundryVTT structure
+            const documentData = {
+                ...inputData,
+                _id: inputData._id || this.generateDocumentId(),
+                _stats: {
+                    compendiumSource: null,
+                    duplicateSource: null,
+                    coreVersion: options.coreVersion || "12.331",
+                    systemId: options.systemId || "unknown",
+                    systemVersion: options.systemVersion || "1.0.0",
+                    createdTime: Date.now(),
+                    modifiedTime: Date.now(),
+                    lastModifiedBy: options.userId || this.generateUserId()  // Use proper user ID
                 }
-            },
-            required: ['name'],
-            additionalProperties: true
-        };
+            };
 
-        // Add document-type specific fields
-        switch (documentType) {
-            case 'Actor':
-                baseSchema.properties.items = {
-                    type: 'array',
-                    description: 'Actor items',
-                    items: { type: 'object' }
-                };
-                baseSchema.properties.effects = {
-                    type: 'array',
-                    description: 'Active effects',
-                    items: { type: 'object' }
-                };
-                break;
-            case 'Item':
-                baseSchema.properties.description = {
-                    type: 'object',
-                    description: 'Item description',
-                    properties: {
-                        value: { type: 'string' }
-                    }
-                };
-                break;
+            // Create document instance using FoundryVTT's constructor
+            // This will handle validation and apply defaults
+            
+            const doc = new BaseDocument(documentData, {});
+            
+            // Return the validated and normalized document data
+            return doc.toObject();
+            
+        } catch (error) {
+            throw new Error(`Failed to create FoundryVTT document: ${error.message}`);
         }
-
-        return baseSchema;
     }
+
+    /**
+     * Generate a random user ID for FoundryVTT (16-character alphanumeric)
+     */
+    generateUserId() {
+        // FoundryVTT expects exactly 16 alphanumeric characters
+        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+        let result = '';
+        
+        for (let i = 0; i < 16; i++) {
+            result += chars[Math.floor(Math.random() * chars.length)];
+        }
+        
+        return result;
+    }
+
+    /**
+     * Generate a random document ID for FoundryVTT
+     */
+    generateDocumentId() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        const bytes = randomBytes(16);
+        
+        for (let i = 0; i < 16; i++) {
+            result += chars[bytes[i] % chars.length];
+        }
+        
+        return result;
+    }
+
 }
 
 // Run the validator if this file is executed directly

@@ -25,6 +25,7 @@
   ],
   "author": "FoundryVTT Object Validator",
   "license": "MIT",
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "classic-level": "^3.0.0"
+  }
 }
