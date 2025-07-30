@@ -54,6 +54,11 @@ class FoundryValidator {
                 short: 'i',
                 description: 'Insert validated object into specified world'
             },
+            update: {
+                type: 'boolean',
+                short: 'u',
+                description: 'Update existing object in specified world'
+            },
             search: {
                 type: 'boolean',
                 short: 'r',
@@ -112,6 +117,7 @@ class FoundryValidator {
                 world: values.world,
                 listWorlds: values.listWorlds,
                 insert: values.insert,
+                update: values.update,
                 search: values.search,
                 name: values.name,
                 id: values.id,
@@ -144,8 +150,9 @@ OPTIONS:
   -s, --system <name>     System name (e.g., dnd5e, pf2e)
   -t, --type <type>       Object type (e.g., actor, item, weapon, spell)
   -l, --list              List available systems, object types, or worlds
-  -w, --world <name>      Target world for insertion/search
+  -w, --world <name>      Target world for insertion/search/update
   -i, --insert            Insert validated object into specified world
+  -u, --update            Update existing object in specified world
   -r, --search            Search and retrieve objects from a world
   --name <pattern>        Search by name pattern (supports wildcards * and ?)
   --id <pattern>          Search by ID pattern (supports wildcards * and ?)
@@ -184,6 +191,15 @@ EXAMPLES:
 
   # Search and show JSON data
   foundry-manager.mjs -s dnd5e -t item -w test-world -r --json 500
+
+  # Update document by ID
+  foundry-manager.mjs -s dnd5e -t actor -w test-world -u --id "abc123" '{"name":"New Name"}'
+
+  # Update document by name pattern
+  foundry-manager.mjs -s dnd5e -t actor -w test-world -u --name "Old Name" '{"hp":{"value":50}}'
+
+  # Update multiple fields
+  foundry-manager.mjs -s dnd5e -t item -w test-world -u --id "xyz789" '{"name":"Updated Item","system":{"price":100}}'
 
   # Validate from file (using shell redirection)
   foundry-manager.mjs -s dnd5e -t item < my-item.json
@@ -249,7 +265,7 @@ EXIT CODES:
                 process.exit(1);
             }
 
-            if (!args.search && !args.jsonString) {
+            if (!args.search && !args.update && !args.jsonString) {
                 console.error('Error: JSON string is required for validation');
                 console.error('Provide JSON as command line argument or via stdin');
                 process.exit(1);
@@ -258,6 +274,10 @@ EXIT CODES:
             // Handle search operations
             if (args.search) {
                 await this.performSearch(args);
+            }
+            // Handle update operations
+            else if (args.update) {
+                await this.performUpdate(args);
             }
             // Handle world insertion validation
             else if (args.insert) {
@@ -471,6 +491,175 @@ EXIT CODES:
 
         } catch (error) {
             console.error(`Validation/insertion error: ${error.message}`);
+            if (verbose) {
+                console.error(error.stack);
+            }
+            process.exit(1);
+        }
+    }
+
+    /**
+     * Perform document update operation
+     */
+    async performUpdate(args) {
+        const { system, type, world, id, name, jsonString, verbose, noImage } = args;
+
+        // Validate required arguments for update
+        if (!world) {
+            console.error('Error: World (-w) is required for update');
+            console.error('Use -l --listWorlds to list available worlds');
+            process.exit(1);
+        }
+
+        if (!id && !name) {
+            console.error('Error: Document ID (--id) or name pattern (--name) is required for update');
+            console.error('Specify which document to update');
+            process.exit(1);
+        }
+
+        if (!jsonString) {
+            console.error('Error: JSON update data is required');
+            console.error('Provide JSON as command line argument or via stdin');
+            process.exit(1);
+        }
+
+        if (verbose) {
+            console.log(`Updating ${type} object in world: ${world}`);
+        }
+
+        // Validate system and object type combination
+        const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
+        if (!validation.valid) {
+            console.error(`Error: ${validation.error}`);
+            process.exit(1);
+        }
+
+        // Validate world exists
+        const worldValidation = await this.worldManager.validateWorldExists(world);
+        if (!worldValidation.valid) {
+            console.error(`Error: ${worldValidation.error}`);
+            process.exit(1);
+        }
+
+        const documentType = validation.documentType;
+
+        try {
+            let targetDocumentId = id;
+
+            // If searching by name, find the document first
+            if (!targetDocumentId && name) {
+                const searchResult = await this.worldManager.searchDocuments(world, documentType, { name });
+                
+                if (!searchResult.success) {
+                    console.error(`Search error: ${searchResult.error}`);
+                    process.exit(1);
+                }
+
+                if (searchResult.documents.length === 0) {
+                    console.error(`No documents found matching name pattern: ${name}`);
+                    process.exit(1);
+                }
+
+                if (searchResult.documents.length > 1) {
+                    console.error(`Multiple documents found matching name pattern: ${name}`);
+                    console.error('Please use --id to specify exact document, or refine your search pattern.');
+                    console.error('\nMatching documents:');
+                    searchResult.documents.forEach(doc => {
+                        console.error(`  - ${doc.name} (ID: ${doc._id})`);
+                    });
+                    process.exit(1);
+                }
+
+                targetDocumentId = searchResult.documents[0]._id;
+                if (verbose) {
+                    console.log(`Found document: ${searchResult.documents[0].name} (ID: ${targetDocumentId})`);
+                }
+            }
+
+            // Parse the update JSON
+            let updateData;
+            try {
+                updateData = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
+            } catch (error) {
+                console.error(`Invalid JSON: ${error.message}`);
+                process.exit(1);
+            }
+
+            if (verbose) {
+                console.log(`Loading system: ${system}`);
+                console.log(`Document type: ${documentType}`);
+                console.log(`Document ID: ${targetDocumentId}`);
+            }
+
+            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
+
+            // First, retrieve the existing document
+            const getResult = await this.worldManager.getDocument(world, documentType, targetDocumentId);
+            
+            if (!getResult.success) {
+                console.error(`Error retrieving document: ${getResult.error}`);
+                process.exit(1);
+            }
+
+            const existingDocument = getResult.document;
+            
+            if (verbose) {
+                console.log('✓ Document retrieved successfully');
+                console.log(`Current name: ${existingDocument.name}`);
+            }
+
+            // Merge the update data with existing document
+            const mergedData = this.worldManager.mergeDocumentData(existingDocument, updateData);
+
+            // Validate the merged document using FoundryVTT's validation
+            const gmUserId = await this.worldManager.getGMUserId(world);
+            
+            // Use FoundryVTT's actual document creation process for validation
+            const validatedData = await this.createFoundryDocument(mergedData, documentType, {
+                systemId: system,
+                systemVersion: systemInfo.version,
+                userId: gmUserId,
+                noImage: noImage
+            });
+
+            if (verbose) {
+                console.log('✓ Updated document validated with FoundryVTT');
+                console.log('Performing update...');
+            }
+
+            // Perform the update
+            const updateResult = await this.worldManager.updateDocument(
+                world, 
+                documentType, 
+                targetDocumentId, 
+                updateData,
+                {
+                    systemId: system,
+                    systemVersion: systemInfo.version,
+                    userId: gmUserId
+                }
+            );
+
+            if (updateResult.success) {
+                console.log('✓ Successfully updated document');
+                console.log(`Document ID: ${updateResult.documentId}`);
+                console.log(`World: ${updateResult.worldId}`);
+                console.log(`Type: ${updateResult.documentType}`);
+                
+                if (verbose) {
+                    console.log('\nUpdated document:');
+                    console.log(JSON.stringify(updateResult.updatedData, null, 2));
+                }
+                
+                process.exit(0);
+            } else {
+                console.error('✗ Update failed');
+                console.error(`Error: ${updateResult.error}`);
+                process.exit(1);
+            }
+
+        } catch (error) {
+            console.error(`Update error: ${error.message}`);
             if (verbose) {
                 console.error(error.stack);
             }

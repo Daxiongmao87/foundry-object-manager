@@ -408,6 +408,105 @@ class WorldManager {
     }
 
     /**
+     * Update an existing document in a world
+     */
+    async updateDocument(worldId, documentType, documentId, updateData, options = {}) {
+        try {
+            // First, retrieve the existing document
+            const getResult = await this.getDocument(worldId, documentType, documentId);
+            
+            if (!getResult.success) {
+                throw new Error(`Document not found: ${getResult.error}`);
+            }
+            
+            const existingDocument = getResult.document;
+            
+            // Merge update data with existing document
+            const mergedData = this.mergeDocumentData(existingDocument, updateData);
+            
+            // Validate world and system compatibility
+            const worldInfo = await this.validateWorldSystem(worldId, options.systemId || existingDocument._stats?.systemId || 'unknown');
+            
+            // Get collection name
+            const collectionType = this.getCollectionName(documentType);
+            
+            // Update modified time and user
+            mergedData._stats = {
+                ...mergedData._stats,
+                modifiedTime: Date.now(),
+                lastModifiedBy: options.userId || 'CLI_UPDATE_USER'
+            };
+            
+            // Get database connection
+            const db = await this.getLevelDB(worldInfo, collectionType);
+            
+            try {
+                // Update document with proper FoundryVTT key format
+                const dbKey = this.formatDocumentKey(collectionType, documentId);
+                await db.put(dbKey, mergedData);
+            } finally {
+                await db.close();
+            }
+            
+            return {
+                success: true,
+                worldId: worldId,
+                documentType: documentType,
+                documentId: documentId,
+                updatedData: mergedData,
+                message: `Successfully updated ${documentType} '${mergedData.name}' in world '${worldId}'`
+            };
+            
+        } catch (error) {
+            return {
+                success: false,
+                error: error.message,
+                worldId: worldId,
+                documentType: documentType,
+                documentId: documentId
+            };
+        }
+    }
+
+    /**
+     * Merge update data with existing document data
+     */
+    mergeDocumentData(existingDocument, updateData) {
+        // Create a deep copy of the existing document
+        const merged = JSON.parse(JSON.stringify(existingDocument));
+        
+        // Fields that should never be changed by updates
+        const protectedFields = ['_id', '_stats.createdTime', '_stats.coreVersion', '_stats.systemId', '_stats.systemVersion'];
+        
+        // Deep merge function that preserves protected fields
+        const deepMerge = (target, source, path = '') => {
+            for (const key in source) {
+                const currentPath = path ? `${path}.${key}` : key;
+                
+                // Skip protected fields
+                if (protectedFields.includes(currentPath)) {
+                    continue;
+                }
+                
+                if (source[key] !== null && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+                    // Ensure the target has this key as an object
+                    if (!target[key] || typeof target[key] !== 'object') {
+                        target[key] = {};
+                    }
+                    deepMerge(target[key], source[key], currentPath);
+                } else {
+                    // Direct assignment for primitives and arrays
+                    target[key] = source[key];
+                }
+            }
+        };
+        
+        deepMerge(merged, updateData);
+        
+        return merged;
+    }
+
+    /**
      * Get a specific document by ID
      */
     async getDocument(worldId, documentType, documentId) {
@@ -420,15 +519,22 @@ class WorldManager {
             }
 
             const db = await this.getLevelDB(worldInfo, collectionType);
-            const document = await db.get(documentId);
             
-            return {
-                success: true,
-                worldId: worldId,
-                documentType: documentType,
-                documentId: documentId,
-                document: document
-            };
+            try {
+                // Use proper FoundryVTT key format
+                const dbKey = this.formatDocumentKey(collectionType, documentId);
+                const document = await db.get(dbKey);
+                
+                return {
+                    success: true,
+                    worldId: worldId,
+                    documentType: documentType,
+                    documentId: documentId,
+                    document: document
+                };
+            } finally {
+                await db.close();
+            }
             
         } catch (error) {
             return {
