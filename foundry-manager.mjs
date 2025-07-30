@@ -600,6 +600,14 @@ EXIT CODES:
                         `Use --list-images to see available images.`
                     );
                 }
+                
+                // Check if the image file actually exists in foundry-data or foundry-app
+                if (!await this.validateImageExists(validatedData.img)) {
+                    throw new Error(
+                        `Image file '${validatedData.img}' does not exist in foundry-data or foundry-app directories. ` +
+                        `Use --list-images to see available images, or use --no-image to bypass this requirement.`
+                    );
+                }
             }
             
             // Return the validated and normalized document data
@@ -607,6 +615,54 @@ EXIT CODES:
             
         } catch (error) {
             throw new Error(`Failed to create FoundryVTT document: ${error.message}`);
+        }
+    }
+
+    /**
+     * Validate that an image file exists in foundry-data or foundry-app directories
+     */
+    async validateImageExists(imagePath) {
+        if (!imagePath) return false;
+        
+        try {
+            // Check for various possible image locations
+            const possiblePaths = [];
+            
+            // 1. Core FoundryVTT app icons (foundry-app/resources/app/ui/icons/)
+            if (imagePath.startsWith('icons/')) {
+                possiblePaths.push(join(this.foundryEnv.foundryPath, 'resources', 'app', 'ui', imagePath));
+            }
+            
+            // 2. System icons (foundry-data/Data/systems/{system}/icons/)
+            if (imagePath.startsWith('systems/')) {
+                possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
+            }
+            
+            // 3. User data icons (foundry-data/Data/icons/)
+            if (imagePath.startsWith('icons/')) {
+                possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
+            }
+            
+            // 4. Direct path in user data (foundry-data/Data/)
+            possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
+            
+            // 5. Alternative core locations (foundry-app/resources/app/public/icons/)
+            if (imagePath.startsWith('icons/')) {
+                possiblePaths.push(join(this.foundryEnv.foundryPath, 'resources', 'app', 'public', imagePath));
+            }
+            
+            // Check if any of these paths exist
+            for (const path of possiblePaths) {
+                if (existsSync(path)) {
+                    return true;
+                }
+            }
+            
+            return false;
+            
+        } catch (error) {
+            // If there's an error checking paths, return false (image doesn't exist)
+            return false;
         }
     }
 

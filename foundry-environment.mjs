@@ -17,7 +17,7 @@ class FoundryEnvironment {
         this.foundryPath = foundryPath || join(__dirname, 'foundry-app');
         this.resourcesPath = join(this.foundryPath, 'resources', 'app');
         this.dataPath = this.findDataPath();
-        this.systemsPath = join(this.dataPath, 'systems');
+        this.systemsPath = join(this.dataPath, 'Data', 'systems');
         
         // Global FoundryVTT objects that need to be mocked
         this.CONFIG = {};
