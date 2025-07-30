@@ -21,8 +21,7 @@ This is a command-line tool for managing FoundryVTT objects, such as actors and 
     # Link to FoundryVTT application files
     ln -s /path/to/FoundryVTT/resources foundry-app
     
-    # Link to FoundryVTT data directory
-    ln -s ~/.local/share/FoundryVTT/Data foundry-data
+    # Mount FoundryVTT data directory (use ./mount_foundry.sh for Venoure project)
     ```
     Note: Adjust the paths according to your FoundryVTT installation location.
 

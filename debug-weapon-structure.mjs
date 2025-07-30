@@ -2,7 +2,7 @@
 
 import { ClassicLevel } from 'classic-level';
 
-const dbPath = '/home/patrick/.local/share/FoundryVTT/Data/systems/dnd5e/packs/items';
+const dbPath = './foundry-data/systems/dnd5e/packs/items';
 const db = new ClassicLevel(dbPath, { valueEncoding: 'json' });
 
 await db.open();

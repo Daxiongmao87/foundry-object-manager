@@ -8,8 +8,8 @@ import { ClassicLevel } from 'classic-level';
 import { join } from 'path';
 
 async function examineDatabase() {
-    const worldItemsPath = '/home/patrick/.local/share/FoundryVTT/Data/worlds/test-world/data/items';
-    const worldActorsPath = '/home/patrick/.local/share/FoundryVTT/Data/worlds/test-world/data/actors';
+    const worldItemsPath = './foundry-data/worlds/test-world/data/items';
+    const worldActorsPath = './foundry-data/worlds/test-world/data/actors';
     
     console.log('=== EXAMINING WORLD ITEMS DATABASE ===');
     await examineDbContents(worldItemsPath, 'Items');

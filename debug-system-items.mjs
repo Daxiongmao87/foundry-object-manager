@@ -7,7 +7,7 @@
 import { ClassicLevel } from 'classic-level';
 import { join } from 'path';
 
-const dbPath = '/home/patrick/.local/share/FoundryVTT/Data/systems/dnd5e/packs/items';
+const dbPath = './foundry-data/systems/dnd5e/packs/items';
 
 async function readSystemItems() {
     console.log(`Opening system items database at: ${dbPath}`);

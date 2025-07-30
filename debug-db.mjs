@@ -5,7 +5,7 @@ const { ClassicLevel } = pkg;
 import { join } from 'path';
 
 async function debugDatabase() {
-    const dbPath = '/home/patrick/.local/share/FoundryVTT/Data/worlds/test-world/data/items';
+    const dbPath = './foundry-data/worlds/test-world/data/items';
     
     console.log('Opening database at:', dbPath);
     

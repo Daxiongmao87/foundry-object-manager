@@ -32,7 +32,7 @@ class FoundryEnvironment {
      */
     findDataPath() {
         const possiblePaths = [
-            process.env.HOME ? join(process.env.HOME, '.local', 'share', 'FoundryVTT', 'Data') : null,
+            join(__dirname, 'foundry-data'),
             process.env.APPDATA ? join(process.env.APPDATA, 'FoundryVTT', 'Data') : null,
             join(__dirname, 'data'), // Local development fallback
         ].filter(Boolean);
