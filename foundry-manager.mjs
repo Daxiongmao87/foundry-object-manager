@@ -88,6 +88,14 @@ class FoundryValidator {
                 type: 'boolean',
                 short: 'h',
                 description: 'Show help message'
+            },
+            'no-image': {
+                type: 'boolean',
+                description: 'Bypass mandatory image requirement for objects'
+            },
+            'list-images': {
+                type: 'boolean',
+                description: 'List available images from core and user data'
             }
         };
 
@@ -112,6 +120,8 @@ class FoundryValidator {
                 json: values.json ? parseInt(values.json) : undefined,
                 verbose: values.verbose,
                 help: values.help,
+                noImage: values['no-image'],
+                listImages: values['list-images'],
                 jsonString: positionals[0]
             };
         } catch (error) {
@@ -142,6 +152,8 @@ OPTIONS:
   --limit <number>        Limit number of results returned
   --details               Show detailed information about found documents
   --json <number>         Show JSON data (specify max characters)
+  --no-image              Bypass mandatory image requirement for objects
+  --list-images           List available images from core and user data
   -v, --verbose           Enable verbose output
   -h, --help              Show this help message
 
@@ -176,6 +188,12 @@ EXAMPLES:
   # Validate from file (using shell redirection)
   foundry-manager.mjs -s dnd5e -t item < my-item.json
 
+  # Validate without requiring an image
+  foundry-manager.mjs -s dnd5e -t actor --no-image '{"name":"Hero","type":"character"}'
+
+  # List available images
+  foundry-manager.mjs --list-images
+
 EXIT CODES:
   0    Validation successful
   1    Validation failed or error occurred
@@ -209,6 +227,12 @@ EXIT CODES:
             // Handle listing operations
             if (args.list) {
                 await this.handleListOperation(args);
+                process.exit(0);
+            }
+
+            // Handle image listing
+            if (args.listImages) {
+                await this.listAvailableImages(args);
                 process.exit(0);
             }
 
@@ -356,7 +380,7 @@ EXIT CODES:
      * Perform JSON validation and world insertion
      */
     async performValidationAndInsertion(args) {
-        const { system, type, world, jsonString, verbose } = args;
+        const { system, type, world, jsonString, verbose, noImage } = args;
 
         // Validate required arguments for insertion
         if (!world) {
@@ -406,7 +430,8 @@ EXIT CODES:
             const documentData = await this.createFoundryDocument(jsonString, documentType, {
                 systemId: system,
                 systemVersion: systemInfo.version,
-                userId: gmUserId
+                userId: gmUserId,
+                noImage: noImage
             });
 
             if (verbose) {
@@ -457,7 +482,7 @@ EXIT CODES:
      * Perform JSON validation
      */
     async performValidation(args) {
-        const { system, type, jsonString, verbose } = args;
+        const { system, type, jsonString, verbose, noImage } = args;
 
         if (verbose) {
             console.log(`Validating ${type} object for system: ${system}`);
@@ -488,7 +513,8 @@ EXIT CODES:
             const documentData = await this.createFoundryDocument(jsonString, documentType, {
                 systemId: system,
                 systemVersion: systemInfo.version,
-                userId: 'VALIDATION_ONLY_16CH'
+                userId: 'VALIDATEONLYUSER',
+                noImage: noImage
             });
 
             console.log('✓ Validation successful');
@@ -537,6 +563,9 @@ EXIT CODES:
             }
 
             // Add required fields with proper FoundryVTT structure
+            // Generate userId if not provided
+            const userId = options.userId || this.generateUserId();
+            
             const documentData = {
                 ...inputData,
                 _id: inputData._id || this.generateDocumentId(),
@@ -548,7 +577,7 @@ EXIT CODES:
                     systemVersion: options.systemVersion || "1.0.0",
                     createdTime: Date.now(),
                     modifiedTime: Date.now(),
-                    lastModifiedBy: options.userId || this.generateUserId()  // Use proper user ID
+                    lastModifiedBy: userId
                 }
             };
 
@@ -557,11 +586,188 @@ EXIT CODES:
             
             const doc = new BaseDocument(documentData, {});
             
+            // Get the validated document data
+            const validatedData = doc.toObject();
+            
+            // Custom image validation (unless bypassed with --no-image)
+            if (!options.noImage) {
+                // Check if the document has an img field and if it's valid
+                const defaultImages = ["icons/svg/mystery-man.svg", "icons/svg/item-bag.svg"];
+                if (!validatedData.img || defaultImages.includes(validatedData.img)) {
+                    throw new Error(
+                        `Image is required for ${documentType} objects. ` +
+                        `Provide an 'img' field with a valid image path, or use --no-image to bypass this requirement. ` +
+                        `Use --list-images to see available images.`
+                    );
+                }
+            }
+            
             // Return the validated and normalized document data
-            return doc.toObject();
+            return validatedData;
             
         } catch (error) {
             throw new Error(`Failed to create FoundryVTT document: ${error.message}`);
+        }
+    }
+
+    /**
+     * List available images from core and user data
+     */
+    async listAvailableImages(args) {
+        const { verbose } = args;
+        
+        try {
+            const { readdir, stat } = await import('fs/promises');
+            const images = {
+                core: [],
+                systems: {},
+                userData: []
+            };
+            
+            // Image extensions to look for
+            const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
+            
+            // Helper function to recursively scan directories
+            const scanDirectory = async (dir, baseDir, collection, depth = 0, maxDepth = 3) => {
+                if (depth > maxDepth) return;
+                
+                try {
+                    const entries = await readdir(dir);
+                    
+                    for (const entry of entries) {
+                        const fullPath = join(dir, entry);
+                        const stats = await stat(fullPath);
+                        
+                        if (stats.isDirectory() && !entry.startsWith('.')) {
+                            await scanDirectory(fullPath, baseDir, collection, depth + 1, maxDepth);
+                        } else if (stats.isFile()) {
+                            const ext = entry.toLowerCase().substring(entry.lastIndexOf('.'));
+                            if (imageExtensions.includes(ext)) {
+                                const relativePath = fullPath.replace(baseDir + '/', '');
+                                collection.push(relativePath);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    if (verbose) {
+                        console.warn(`Could not scan directory ${dir}: ${error.message}`);
+                    }
+                }
+            };
+            
+            // Scan core icons
+            const coreIconsPath = join(this.foundryEnv.foundryPath, 'resources', 'app', 'ui', 'icons');
+            if (existsSync(coreIconsPath)) {
+                console.log('Scanning core icons...');
+                await scanDirectory(coreIconsPath, coreIconsPath, images.core);
+            }
+            
+            // Scan system icons
+            const systemsPath = this.foundryEnv.systemsPath;
+            if (existsSync(systemsPath)) {
+                const systems = await readdir(systemsPath);
+                for (const systemId of systems) {
+                    const systemIconsPath = join(systemsPath, systemId, 'icons');
+                    if (existsSync(systemIconsPath)) {
+                        console.log(`Scanning ${systemId} system icons...`);
+                        images.systems[systemId] = [];
+                        await scanDirectory(systemIconsPath, join(systemsPath, systemId), images.systems[systemId]);
+                    }
+                }
+            }
+            
+            // Scan user data icons
+            const userDataPath = this.foundryEnv.dataPath;
+            const userIconsPath = join(userDataPath, 'icons');
+            if (existsSync(userIconsPath)) {
+                console.log('Scanning user data icons...');
+                await scanDirectory(userIconsPath, userDataPath, images.userData);
+            }
+            
+            // Display results
+            console.log('\n=== Available Images ===\n');
+            
+            if (images.core.length > 0) {
+                console.log(`Core Icons (${images.core.length} found):`);
+                console.log('Base path: icons/');
+                
+                // Group by subdirectory
+                const grouped = {};
+                for (const img of images.core.sort()) {
+                    const parts = img.split('/');
+                    const category = parts[0] || 'root';
+                    if (!grouped[category]) grouped[category] = [];
+                    grouped[category].push(img);
+                }
+                
+                for (const [category, imgs] of Object.entries(grouped)) {
+                    console.log(`\n  ${category}/`);
+                    for (const img of imgs.slice(0, 5)) {
+                        console.log(`    icons/${img}`);
+                    }
+                    if (imgs.length > 5) {
+                        console.log(`    ... and ${imgs.length - 5} more`);
+                    }
+                }
+            }
+            
+            // Display system icons
+            for (const [systemId, systemImages] of Object.entries(images.systems)) {
+                if (systemImages.length > 0) {
+                    console.log(`\n\n${systemId} System Icons (${systemImages.length} found):`);
+                    console.log(`Use as: systems/${systemId}/icons/...`);
+                    
+                    // Group by subdirectory
+                    const grouped = {};
+                    for (const img of systemImages.sort()) {
+                        const parts = img.replace('icons/', '').split('/');
+                        const category = parts[0] || 'root';
+                        if (!grouped[category]) grouped[category] = [];
+                        grouped[category].push(img);
+                    }
+                    
+                    for (const [category, imgs] of Object.entries(grouped)) {
+                        console.log(`\n  ${category}/`);
+                        for (const img of imgs.slice(0, 3)) {
+                            console.log(`    systems/${systemId}/${img}`);
+                        }
+                        if (imgs.length > 3) {
+                            console.log(`    ... and ${imgs.length - 3} more`);
+                        }
+                    }
+                }
+            }
+            
+            if (images.userData.length > 0) {
+                console.log(`\n\nUser Data Icons (${images.userData.length} found):`);
+                console.log(`Base path: ${userDataPath}`);
+                
+                for (const img of images.userData.slice(0, 10)) {
+                    console.log(`  ${img}`);
+                }
+                if (images.userData.length > 10) {
+                    console.log(`  ... and ${images.userData.length - 10} more`);
+                }
+            }
+            
+            console.log('\n=== Usage ===');
+            console.log('Use these paths in the "img" field of your objects.');
+            console.log('System icons: "systems/{systemId}/icons/..."');
+            console.log('User icons: "icons/..."');
+            
+            if (!images.core.length && Object.keys(images.systems).length === 0 && !images.userData.length) {
+                console.log('\nNo custom images found. You can:');
+                console.log('1. Add images to: ' + join(userDataPath, 'icons'));
+                console.log('2. Use external URLs (if supported by your FoundryVTT configuration)');
+                console.log('3. Use system-provided images from installed systems');
+            }
+            
+        } catch (error) {
+            console.error(`Error listing images: ${error.message}`);
+            if (verbose) {
+                console.error(error.stack);
+            }
+            process.exit(1);
         }
     }
 
@@ -570,7 +776,7 @@ EXIT CODES:
      */
     generateUserId() {
         // FoundryVTT expects exactly 16 alphanumeric characters
-        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         let result = '';
         
         for (let i = 0; i < 16; i++) {
