@@ -156,74 +156,70 @@ USAGE:
   foundry-manager.mjs [OPTIONS] [JSON_STRING]
 
 OPTIONS:
+  # Core Operations
+  -i, --insert            Insert validated object into specified world
+  -u, --update            Update existing object in specified world  
+  -r, --search            Search and retrieve objects from a world
+  --schema                Extract and display the expected structure (schema)
+
+  # Required Parameters
   -s, --system <name>     System name (e.g., dnd5e, pf2e) - Required for validation-only and schema extraction
-  -t, --type <type>       Object type (e.g., actor, item, weapon, spell)
+  -t, --type <type>       Object type (e.g., character, weapon, spell, npc)
+  -w, --world <name>      Target world (auto-detects system when used with -i, -u, -r, --schema)
+
+  # Discovery Operations  
   --list-systems          List available systems
   --list-worlds           List available worlds
   --list-types            List available object types for a system (requires -s)
-  -w, --world <name>      Target world (auto-detects system when used with -i, -u, -r)
-  -i, --insert            Insert validated object into specified world
-  -u, --update            Update existing object in specified world
-  -r, --search            Search and retrieve objects from a world
+  --list-images           List available images from core and user data
+
+  # Search Filters
   --name <pattern>        Search by name pattern (supports wildcards * and ?)
   --id <pattern>          Search by ID pattern (supports wildcards * and ?)
   --limit <number>        Limit number of results returned
+
+  # Output Options
   --details               Show detailed information about found documents
-  --json                  Show full JSON data for found documents
+  --json                  Show full JSON data for search results (not for schema extraction)
   --no-image              Bypass mandatory image requirement for objects
-  --list-images           List available images from core and user data
-  --schema                Extract and display the expected structure (schema)
   -v, --verbose           Enable verbose output
   -h, --help              Show this help message
 
 EXAMPLES:
-  # List available systems
-  foundry-manager.mjs --list-systems
+  # Complete Workflow: Discovery → Schema → Create
+  foundry-manager.mjs --list-systems                              # 1. Find available systems
+  foundry-manager.mjs --list-types -s dnd5e                       # 2. Find object types for system
+  foundry-manager.mjs -s dnd5e -t character --schema              # 3. Get expected structure
+  foundry-manager.mjs -w my-world -t character -i '{"name":"Hero","type":"character"}'  # 4. Create object
 
-  # List available worlds
-  foundry-manager.mjs --list-worlds
+  # Discovery Operations
+  foundry-manager.mjs --list-systems                              # List available systems
+  foundry-manager.mjs --list-worlds                               # List available worlds
+  foundry-manager.mjs --list-types -s dnd5e                       # List object types for D&D 5e
+  foundry-manager.mjs --list-images                               # List available images
 
-  # List object types for D&D 5e system
-  foundry-manager.mjs --list-types -s dnd5e
+  # Schema Extraction
+  foundry-manager.mjs -s dnd5e -t character --schema              # Extract character schema (with system)
+  foundry-manager.mjs -w my-world -t weapon --schema              # Extract weapon schema (auto-detect system)
 
-  # Validate an actor JSON object (system required for validation-only)
-  foundry-manager.mjs -s dnd5e -t actor '{"name":"Test Character","type":"character"}'
+  # Object Creation & Validation
+  foundry-manager.mjs -s dnd5e -t character '{"name":"Test","type":"character"}'  # Validate only
+  foundry-manager.mjs -w my-world -t character -i '{"name":"Hero","type":"character"}'  # Insert into world
+  foundry-manager.mjs -w my-world -t character -i --no-image '{"name":"Hero","type":"character"}'  # Skip image validation
 
-  # Insert into world (system auto-detected from world)
-  foundry-manager.mjs -w test-world -t actor -i '{"name":"Hero","type":"character"}'
+  # Search Operations
+  foundry-manager.mjs -w my-world -t character -r                 # Search all characters
+  foundry-manager.mjs -w my-world -t character -r --name "Hero*"  # Search by name pattern
+  foundry-manager.mjs -w my-world -t item -r --details --limit 5  # Search with details, limit results
+  foundry-manager.mjs -w my-world -t item -r --json               # Search and show full JSON
 
-  # Search for actors in a world (system auto-detected)
-  foundry-manager.mjs -w test-world -t actor -r
+  # Update Operations
+  foundry-manager.mjs -w my-world -t character -u --id "abc123" '{"name":"New Name"}'     # Update by ID
+  foundry-manager.mjs -w my-world -t character -u --name "Hero" '{"hp":{"value":50}}'     # Update by name
+  foundry-manager.mjs -w my-world -t item -u --id "xyz789" '{"name":"Magic Sword","system":{"price":100}}'  # Update multiple fields
 
-  # Search for actors by name pattern
-  foundry-manager.mjs -w test-world -t actor -r --name "Test*"
-
-  # Search with detailed output
-  foundry-manager.mjs -w test-world -t actor -r --details --limit 5
-
-  # Search and show full JSON data
-  foundry-manager.mjs -w test-world -t item -r --json
-
-  # Update document by ID (system auto-detected)
-  foundry-manager.mjs -w test-world -t actor -u --id "abc123" '{"name":"New Name"}'
-
-  # Update document by name pattern
-  foundry-manager.mjs -w test-world -t actor -u --name "Old Name" '{"hp":{"value":50}}'
-
-  # Update multiple fields
-  foundry-manager.mjs -w test-world -t item -u --id "xyz789" '{"name":"Updated Item","system":{"price":100}}'
-
-  # Validate from file (using shell redirection)
-  foundry-manager.mjs -s dnd5e -t item < my-item.json
-
-  # Validate without requiring an image
-  foundry-manager.mjs -s dnd5e -t actor --no-image '{"name":"Hero","type":"character"}'
-
-  # List available images
-  foundry-manager.mjs --list-images
-
-  # Extract schema for weapon type in D&D 5e
-  foundry-manager.mjs -s dnd5e -t weapon --schema
+  # Advanced Usage
+  foundry-manager.mjs -s dnd5e -t item < my-item.json             # Validate from file
 
 EXIT CODES:
   0    Validation successful
