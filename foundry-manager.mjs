@@ -37,6 +37,41 @@ class FoundryValidator {
     }
 
     /**
+     * Extract only the fields that were requested to be updated, but with validated values
+     * This ensures we don't overwrite fields that weren't in the original update request
+     * @param {Object} originalUpdate - The original update data from user input
+     * @param {Object} validatedDocument - The fully validated document
+     * @returns {Object} The validated update data containing only requested fields
+     */
+    static extractChangedFields(originalUpdate, validatedDocument) {
+        const extractedUpdate = {};
+
+        function extractNestedFields(updateObj, validatedObj, targetObj) {
+            for (const [key, value] of Object.entries(updateObj)) {
+                if (value === null) {
+                    // Explicitly setting field to null
+                    targetObj[key] = null;
+                } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                    // Nested object - recurse
+                    if (validatedObj && typeof validatedObj[key] === 'object' && validatedObj[key] !== null) {
+                        targetObj[key] = {};
+                        extractNestedFields(value, validatedObj[key], targetObj[key]);
+                    } else {
+                        // If validation created a new structure, use it
+                        targetObj[key] = validatedObj ? validatedObj[key] : value;
+                    }
+                } else {
+                    // Primitive value or array - use validated version if available
+                    targetObj[key] = validatedObj && validatedObj.hasOwnProperty(key) ? validatedObj[key] : value;
+                }
+            }
+        }
+
+        extractNestedFields(originalUpdate, validatedDocument, extractedUpdate);
+        return extractedUpdate;
+    }
+
+    /**
      * Parse command line arguments
      */
     parseArguments() {
@@ -886,15 +921,23 @@ EXIT CODES:
 
             if (verbose) {
                 console.log('✓ Updated document validated with FoundryVTT');
+                console.log('Extracting validated update fields...');
+            }
+
+            // Extract only the fields that were requested to be updated, but with validated values
+            const validatedUpdateData = FoundryValidator.extractChangedFields(updateData, validatedData);
+
+            if (verbose) {
+                console.log('✓ Validated update data extracted');
                 console.log('Performing update...');
             }
 
-            // Perform the update
+            // Perform the update with validated data
             const updateResult = await this.worldManager.updateDocument(
                 world, 
                 documentType, 
                 targetDocumentId, 
-                updateData,
+                validatedUpdateData,  // Use validated update data instead of raw updateData
                 {
                     systemId: system,
                     systemVersion: systemInfo.version,
