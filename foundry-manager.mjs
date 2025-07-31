@@ -35,19 +35,22 @@ class FoundryValidator {
                 short: 't',
                 description: 'Object type (e.g., actor, item, weapon, spell)'
             },
-            list: {
+            'list-systems': {
                 type: 'boolean',
-                short: 'l',
-                description: 'List available systems, object types, or worlds'
+                description: 'List available systems'
+            },
+            'list-worlds': {
+                type: 'boolean',
+                description: 'List available worlds'
+            },
+            'list-types': {
+                type: 'boolean',
+                description: 'List available object types for a system (requires -s)'
             },
             world: {
                 type: 'string',
                 short: 'w',
                 description: 'Target world for insertion (use with --insert)'
-            },
-            listWorlds: {
-                type: 'boolean',
-                description: 'List available worlds instead of systems'
             },
             insert: {
                 type: 'boolean',
@@ -81,8 +84,8 @@ class FoundryValidator {
                 description: 'Show detailed information about found documents'
             },
             json: {
-                type: 'string',
-                description: 'Show JSON data (specify max characters, e.g., --json 500)'
+                type: 'boolean',
+                description: 'Show full JSON data for found documents'
             },
             verbose: {
                 type: 'boolean',
@@ -117,9 +120,10 @@ class FoundryValidator {
             return {
                 system: values.system,
                 type: values.type,
-                list: values.list,
+                listSystems: values['list-systems'],
+                listWorlds: values['list-worlds'],
+                listTypes: values['list-types'],
                 world: values.world,
-                listWorlds: values.listWorlds,
                 insert: values.insert,
                 update: values.update,
                 search: values.search,
@@ -127,7 +131,7 @@ class FoundryValidator {
                 id: values.id,
                 limit: values.limit ? parseInt(values.limit) : undefined,
                 details: values.details,
-                json: values.json ? parseInt(values.json) : undefined,
+                json: values.json,
                 verbose: values.verbose,
                 help: values.help,
                 noImage: values['no-image'],
@@ -152,10 +156,12 @@ USAGE:
   foundry-manager.mjs [OPTIONS] [JSON_STRING]
 
 OPTIONS:
-  -s, --system <name>     System name (e.g., dnd5e, pf2e)
+  -s, --system <name>     System name (e.g., dnd5e, pf2e) - Required for validation-only and schema extraction
   -t, --type <type>       Object type (e.g., actor, item, weapon, spell)
-  -l, --list              List available systems, object types, or worlds
-  -w, --world <name>      Target world for insertion/search/update
+  --list-systems          List available systems
+  --list-worlds           List available worlds
+  --list-types            List available object types for a system (requires -s)
+  -w, --world <name>      Target world (auto-detects system when used with -i, -u, -r)
   -i, --insert            Insert validated object into specified world
   -u, --update            Update existing object in specified world
   -r, --search            Search and retrieve objects from a world
@@ -163,7 +169,7 @@ OPTIONS:
   --id <pattern>          Search by ID pattern (supports wildcards * and ?)
   --limit <number>        Limit number of results returned
   --details               Show detailed information about found documents
-  --json <number>         Show JSON data (specify max characters)
+  --json                  Show full JSON data for found documents
   --no-image              Bypass mandatory image requirement for objects
   --list-images           List available images from core and user data
   --schema                Extract and display the expected structure (schema)
@@ -172,40 +178,40 @@ OPTIONS:
 
 EXAMPLES:
   # List available systems
-  foundry-manager.mjs -l
+  foundry-manager.mjs --list-systems
 
   # List available worlds
-  foundry-manager.mjs -l --listWorlds
+  foundry-manager.mjs --list-worlds
 
   # List object types for D&D 5e system
-  foundry-manager.mjs -s dnd5e -l
+  foundry-manager.mjs --list-types -s dnd5e
 
-  # Validate an actor JSON object
+  # Validate an actor JSON object (system required for validation-only)
   foundry-manager.mjs -s dnd5e -t actor '{"name":"Test Character","type":"character"}'
 
-  # Validate and insert into world
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -i '{"name":"Hero","type":"character"}'
+  # Insert into world (system auto-detected from world)
+  foundry-manager.mjs -w test-world -t actor -i '{"name":"Hero","type":"character"}'
 
-  # Search for actors in a world
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -r
+  # Search for actors in a world (system auto-detected)
+  foundry-manager.mjs -w test-world -t actor -r
 
   # Search for actors by name pattern
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -r --name "Test*"
+  foundry-manager.mjs -w test-world -t actor -r --name "Test*"
 
   # Search with detailed output
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -r --details --limit 5
+  foundry-manager.mjs -w test-world -t actor -r --details --limit 5
 
-  # Search and show JSON data
-  foundry-manager.mjs -s dnd5e -t item -w test-world -r --json 500
+  # Search and show full JSON data
+  foundry-manager.mjs -w test-world -t item -r --json
 
-  # Update document by ID
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -u --id "abc123" '{"name":"New Name"}'
+  # Update document by ID (system auto-detected)
+  foundry-manager.mjs -w test-world -t actor -u --id "abc123" '{"name":"New Name"}'
 
   # Update document by name pattern
-  foundry-manager.mjs -s dnd5e -t actor -w test-world -u --name "Old Name" '{"hp":{"value":50}}'
+  foundry-manager.mjs -w test-world -t actor -u --name "Old Name" '{"hp":{"value":50}}'
 
   # Update multiple fields
-  foundry-manager.mjs -s dnd5e -t item -w test-world -u --id "xyz789" '{"name":"Updated Item","system":{"price":100}}'
+  foundry-manager.mjs -w test-world -t item -u --id "xyz789" '{"name":"Updated Item","system":{"price":100}}'
 
   # Validate from file (using shell redirection)
   foundry-manager.mjs -s dnd5e -t item < my-item.json
@@ -230,12 +236,27 @@ EXIT CODES:
      * Extract and display the schema for a given object type
      */
     async extractSchema(args) {
-        const { system, type, verbose } = args;
+        let { system, type, world, verbose } = args;
+
+        // Auto-detect system from world if not provided
+        if (!system && world) {
+            try {
+                const worldInfo = await this.worldManager.getWorldInfo(world);
+                system = worldInfo.system;
+                if (verbose) {
+                    console.log(`Auto-detected system: ${system} from world: ${world}`);
+                }
+            } catch (error) {
+                console.error(`Error: Could not auto-detect system from world '${world}': ${error.message}`);
+                console.error('Use -l --listWorlds to list available worlds');
+                process.exit(1);
+            }
+        }
 
         // Validate required arguments for schema extraction
         if (!system) {
-            console.error('Error: System (-s) is required for schema extraction');
-            console.error('Use -l to list available systems');
+            console.error('Error: System (-s) is required for schema extraction when no world (-w) is specified');
+            console.error('Use -l to list available systems, or specify a world with -w to auto-detect system');
             process.exit(1);
         }
 
@@ -298,6 +319,45 @@ EXIT CODES:
 
 
     /**
+     * Enhanced error handling that provides actionable guidance
+     */
+    async handleEnhancedError(error, context) {
+        const { operation, system, type, world, verbose } = context;
+        
+        console.error(`${operation} error: ${error.message}`);
+        
+        if (verbose) {
+            console.error(error.stack);
+        }
+        
+        // Check if this is an invalid object type error
+        if (error.message.includes('not found in system')) {
+            console.error('\n📋 Available object types for this system:');
+            console.error(`Run: ./foundry-manager.mjs --list-types -s ${system}`);
+            console.error('');
+            return;
+        }
+        
+        // Check if this is a validation error (FoundryVTT document validation)
+        if (error.message.includes('validation errors') || error.message.includes('may not be undefined')) {
+            console.error('\n📋 Expected structure for this object type:');
+            console.error(`Run: ./foundry-manager.mjs -s ${system} -t ${type} --schema`);
+            console.error('');
+            console.error('💡 This will show you the complete expected JSON structure with all required fields.');
+            
+            // If we have world context, show that the schema is specific to this system
+            if (world) {
+                console.error(`   (Schema for ${type} in ${system} system used by world '${world}')`);
+            }
+            console.error('');
+            return;
+        }
+        
+        // For other errors, just show the basic error
+        console.error('');
+    }
+
+    /**
      * Main execution function
      */
     async run() {
@@ -321,7 +381,7 @@ EXIT CODES:
             await this.foundryEnv.initialize();
 
             // Handle listing operations
-            if (args.list) {
+            if (args.listSystems || args.listWorlds || args.listTypes) {
                 await this.handleListOperation(args);
                 process.exit(0);
             }
@@ -338,10 +398,25 @@ EXIT CODES:
                 process.exit(0);
             }
 
+            // Auto-detect system from world if world is provided but system is not
+            if (!args.system && args.world) {
+                try {
+                    const worldInfo = await this.worldManager.getWorldInfo(args.world);
+                    args.system = worldInfo.system;
+                    if (args.verbose) {
+                        console.log(`Auto-detected system: ${args.system} from world: ${args.world}`);
+                    }
+                } catch (error) {
+                    console.error(`Error: Could not auto-detect system from world '${args.world}': ${error.message}`);
+                    console.error('Use -l --listWorlds to list available worlds');
+                    process.exit(1);
+                }
+            }
+
             // Validate required arguments for validation
             if (!args.system) {
-                console.error('Error: System (-s) is required for validation');
-                console.error('Use -l to list available systems');
+                console.error('Error: System (-s) is required for validation when no world (-w) is specified');
+                console.error('Use -l to list available systems, or specify a world with -w to auto-detect system');
                 process.exit(1);
             }
 
@@ -375,6 +450,32 @@ EXIT CODES:
             }
 
         } catch (error) {
+            // Always try enhanced error handling for operations with type parameter
+            if (args.type && (args.insert || args.update || args.search)) {
+                // If we have a world, try to auto-detect system for error handling
+                let systemForError = args.system;
+                if (!systemForError && args.world) {
+                    try {
+                        const worldInfo = await this.worldManager.getWorldInfo(args.world);
+                        systemForError = worldInfo.system;
+                    } catch (worldError) {
+                        // Fall through to basic error handling
+                    }
+                }
+                
+                if (systemForError) {
+                    await this.handleEnhancedError(error, {
+                        operation: 'operation',
+                        system: systemForError,
+                        type: args.type,
+                        world: args.world,
+                        verbose: args.verbose
+                    });
+                    process.exit(1);
+                }
+            }
+            
+            // Fallback to basic error handling
             console.error(`Fatal error: ${error.message}`);
             if (args.verbose) {
                 console.error(error.stack);
@@ -391,12 +492,17 @@ EXIT CODES:
             // List all available worlds
             const output = await this.worldManager.listWorlds();
             console.log(output);
-        } else if (!args.system) {
+        } else if (args.listSystems) {
             // List all available systems
             const output = await this.systemDiscovery.listSystems();
             console.log(output);
-        } else {
+        } else if (args.listTypes) {
             // List object types for specific system
+            if (!args.system) {
+                console.error('Error: System (-s) is required when using --list-types');
+                console.error('Use --list-systems to see available systems');
+                process.exit(1);
+            }
             const output = await this.systemDiscovery.listSystemObjectTypes(args.system);
             console.log(output);
         }
@@ -406,13 +512,28 @@ EXIT CODES:
      * Perform search operations
      */
     async performSearch(args) {
-        const { system, type, world, name, id, limit, details, json, verbose } = args;
+        let { system, type, world, name, id, limit, details, json, verbose } = args;
 
         // Validate required arguments for search
         if (!world) {
             console.error('Error: World (-w) is required for search');
             console.error('Use -l --listWorlds to list available worlds');
             process.exit(1);
+        }
+
+        // Auto-detect system from world if not provided
+        if (!system && world) {
+            try {
+                const worldInfo = await this.worldManager.getWorldInfo(world);
+                system = worldInfo.system;
+                if (verbose) {
+                    console.log(`Auto-detected system: ${system} from world: ${world}`);
+                }
+            } catch (error) {
+                console.error(`Error: Could not auto-detect system from world '${world}': ${error.message}`);
+                console.error('Use -l --listWorlds to list available worlds');
+                process.exit(1);
+            }
         }
 
         if (verbose) {
@@ -446,7 +567,7 @@ EXIT CODES:
             const searchOptions = {};
             if (name) searchOptions.name = name;
             if (id) searchOptions.id = id;
-            if (type && validation.subtypes.includes(type)) {
+            if (type && validation && validation.subtypes && validation.subtypes.includes(type)) {
                 searchOptions.type = type;
             }
             if (limit) searchOptions.limit = limit;
@@ -457,7 +578,7 @@ EXIT CODES:
             // Format and display results
             const formatOptions = {
                 showDetails: details || false,
-                showJSON: json || 0
+                showJSON: json || false
             };
 
             const output = this.worldManager.formatDocumentList(searchResult, formatOptions);
@@ -499,10 +620,31 @@ EXIT CODES:
             console.log(`Validating ${type} object for insertion into world: ${world}`);
         }
 
-        // Validate system and object type combination
-        const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-        if (!validation.valid) {
-            console.error(`Error: ${validation.error}`);
+        let validation;
+        try {
+            // Validate system and object type combination
+            validation = await this.systemDiscovery.validateSystemObjectType(system, type);
+            if (!validation.valid) {
+                // Create error object for enhanced error handling
+                const error = new Error(validation.error);
+                await this.handleEnhancedError(error, {
+                    operation: 'validation',
+                    system: system,
+                    type: type,
+                    world: world,
+                    verbose: verbose
+                });
+                process.exit(1);
+            }
+        } catch (error) {
+            // Enhanced error handling for invalid object type
+            await this.handleEnhancedError(error, {
+                operation: 'validation',
+                system: system,
+                type: type,
+                world: world,
+                verbose: verbose
+            });
             process.exit(1);
         }
 
@@ -576,10 +718,14 @@ EXIT CODES:
             }
 
         } catch (error) {
-            console.error(`Validation/insertion error: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
-            }
+            // Enhanced error handling with auto-detected system
+            await this.handleEnhancedError(error, {
+                operation: 'validation/insertion',
+                system: system,
+                type: type,
+                world: world,
+                verbose: verbose
+            });
             process.exit(1);
         }
     }
@@ -745,10 +891,14 @@ EXIT CODES:
             }
 
         } catch (error) {
-            console.error(`Update error: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
-            }
+            // Enhanced error handling with auto-detected system
+            await this.handleEnhancedError(error, {
+                operation: 'update',
+                system: system,
+                type: type,
+                world: world,
+                verbose: verbose
+            });
             process.exit(1);
         }
     }
