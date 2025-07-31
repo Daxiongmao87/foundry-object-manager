@@ -580,11 +580,8 @@ class WorldManager {
                 }
             }
             
-            if (options.showJSON && options.showJSON > 0) {
-                const jsonStr = JSON.stringify(doc, null, 2);
-                const truncated = jsonStr.length > options.showJSON ? 
-                    jsonStr.substring(0, options.showJSON) + '...' : jsonStr;
-                output.push(`  JSON: ${truncated}`);
+            if (options.showJSON) {
+                output.push(`  JSON: ${JSON.stringify(doc, null, 2)}`);
             }
             
             output.push('');

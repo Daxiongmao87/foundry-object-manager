@@ -21,6 +21,22 @@ class FoundryValidator {
     }
 
     /**
+     * Generate a random 16-character alphanumeric ID for FoundryVTT
+     * @returns {string} A 16-character alphanumeric ID
+     */
+    static generateRandomId() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        const bytes = randomBytes(16);
+        
+        for (let i = 0; i < 16; i++) {
+            result += chars[bytes[i] % chars.length];
+        }
+        
+        return result;
+    }
+
+    /**
      * Parse command line arguments
      */
     parseArguments() {
@@ -1003,11 +1019,11 @@ EXIT CODES:
 
             // Add required fields with proper FoundryVTT structure
             // Generate userId if not provided
-            const userId = options.userId || this.generateUserId();
+            const userId = options.userId || FoundryValidator.generateRandomId();
             
             const documentData = {
                 ...inputData,
-                _id: inputData._id || this.generateDocumentId(),
+                _id: inputData._id || FoundryValidator.generateRandomId(),
                 _stats: {
                     compendiumSource: null,
                     duplicateSource: null,
@@ -1072,9 +1088,9 @@ EXIT CODES:
                 possiblePaths.push(join(this.foundryEnv.foundryPath, 'resources', 'app', 'ui', imagePath));
             }
             
-            // 2. System icons (foundry-data/Data/systems/{system}/icons/)
+            // 2. System icons (foundry-data/systems/{system}/icons/)
             if (imagePath.startsWith('systems/')) {
-                possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
+                possiblePaths.push(join(this.foundryEnv.dataPath, imagePath));
             }
             
             // 3. User data icons (foundry-data/Data/icons/)
@@ -1114,187 +1130,89 @@ EXIT CODES:
         try {
             const { readdir, stat } = await import('fs/promises');
             const images = {
-                core: [],
+                app: [],
                 systems: {},
-                userData: []
+                data: []
             };
             
-            // Image extensions to look for
             const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
             
-            // Helper function to recursively scan directories
-            const scanDirectory = async (dir, baseDir, collection, depth = 0, maxDepth = 3) => {
-                if (depth > maxDepth) return;
-                
+            const scanDirectory = async (dir, baseDir, collection) => {
                 try {
-                    const entries = await readdir(dir);
-                    
+                    const entries = await readdir(dir, { withFileTypes: true });
                     for (const entry of entries) {
-                        const fullPath = join(dir, entry);
-                        const stats = await stat(fullPath);
-                        
-                        if (stats.isDirectory() && !entry.startsWith('.')) {
-                            await scanDirectory(fullPath, baseDir, collection, depth + 1, maxDepth);
-                        } else if (stats.isFile()) {
-                            const ext = entry.toLowerCase().substring(entry.lastIndexOf('.'));
-                            if (imageExtensions.includes(ext)) {
-                                const relativePath = fullPath.replace(baseDir + '/', '');
-                                collection.push(relativePath);
-                            }
+                        const fullPath = join(dir, entry.name);
+                        if (entry.isDirectory()) {
+                            await scanDirectory(fullPath, baseDir, collection);
+                        } else if (entry.isFile() && imageExtensions.some(ext => entry.name.toLowerCase().endsWith(ext))) {
+                            const relativePath = fullPath.replace(baseDir + '/', '');
+                            collection.push(relativePath);
                         }
                     }
                 } catch (error) {
-                    if (verbose) {
-                        console.warn(`Could not scan directory ${dir}: ${error.message}`);
-                    }
+                    if (verbose) console.warn(`Could not scan directory ${dir}: ${error.message}`);
                 }
             };
-            
-            // Scan core icons
-            const coreIconsPath = join(this.foundryEnv.foundryPath, 'resources', 'app', 'ui', 'icons');
-            if (existsSync(coreIconsPath)) {
-                console.log('Scanning core icons...');
-                await scanDirectory(coreIconsPath, coreIconsPath, images.core);
+
+            // 1. Scan foundry-app/resources/app/public
+            const appPublicPath = join(this.foundryEnv.foundryPath, 'resources', 'app', 'public');
+            if (existsSync(appPublicPath)) {
+                console.log('Scanning app public directory...');
+                await scanDirectory(appPublicPath, appPublicPath, images.app);
             }
-            
-            // Scan system icons
+
+            // 2. Scan foundry-data/systems/{systemId}
             const systemsPath = this.foundryEnv.systemsPath;
             if (existsSync(systemsPath)) {
-                const systems = await readdir(systemsPath);
-                for (const systemId of systems) {
-                    const systemIconsPath = join(systemsPath, systemId, 'icons');
-                    if (existsSync(systemIconsPath)) {
-                        console.log(`Scanning ${systemId} system icons...`);
+                const systemDirs = await readdir(systemsPath, { withFileTypes: true });
+                for (const systemDir of systemDirs) {
+                    if (systemDir.isDirectory()) {
+                        const systemId = systemDir.name;
+                        const systemPath = join(systemsPath, systemId);
+                        console.log(`Scanning ${systemId} system directory...`);
                         images.systems[systemId] = [];
-                        await scanDirectory(systemIconsPath, join(systemsPath, systemId), images.systems[systemId]);
+                        await scanDirectory(systemPath, this.foundryEnv.dataPath, images.systems[systemId]);
                     }
                 }
             }
-            
-            // Scan user data icons
-            const userDataPath = this.foundryEnv.dataPath;
-            const userIconsPath = join(userDataPath, 'icons');
-            if (existsSync(userIconsPath)) {
-                console.log('Scanning user data icons...');
-                await scanDirectory(userIconsPath, userDataPath, images.userData);
+
+            // 3. Scan foundry-data
+            const dataPath = this.foundryEnv.dataPath;
+            if (existsSync(dataPath)) {
+                console.log('Scanning data directory...');
+                await scanDirectory(dataPath, dataPath, images.data);
             }
             
             // Display results
             console.log('\n=== Available Images ===\n');
-            
-            if (images.core.length > 0) {
-                console.log(`Core Icons (${images.core.length} found):`);
-                console.log('Base path: icons/');
-                
-                // Group by subdirectory
-                const grouped = {};
-                for (const img of images.core.sort()) {
-                    const parts = img.split('/');
-                    const category = parts[0] || 'root';
-                    if (!grouped[category]) grouped[category] = [];
-                    grouped[category].push(img);
-                }
-                
-                for (const [category, imgs] of Object.entries(grouped)) {
-                    console.log(`\n  ${category}/`);
-                    for (const img of imgs.slice(0, 5)) {
-                        console.log(`    icons/${img}`);
-                    }
-                    if (imgs.length > 5) {
-                        console.log(`    ... and ${imgs.length - 5} more`);
-                    }
-                }
+
+            if (images.app.length > 0) {
+                console.log(`\n--- App Images (${images.app.length} found) ---`);
+                console.log('Usage path starts with: e.g., "icons/weapons/axes/axe-battle-black.webp"');
+                images.app.forEach(img => console.log(img));
             }
-            
-            // Display system icons
+
             for (const [systemId, systemImages] of Object.entries(images.systems)) {
                 if (systemImages.length > 0) {
-                    console.log(`\n\n${systemId} System Icons (${systemImages.length} found):`);
-                    console.log(`Use as: systems/${systemId}/icons/...`);
-                    
-                    // Group by subdirectory
-                    const grouped = {};
-                    for (const img of systemImages.sort()) {
-                        const parts = img.replace('icons/', '').split('/');
-                        const category = parts[0] || 'root';
-                        if (!grouped[category]) grouped[category] = [];
-                        grouped[category].push(img);
-                    }
-                    
-                    for (const [category, imgs] of Object.entries(grouped)) {
-                        console.log(`\n  ${category}/`);
-                        for (const img of imgs.slice(0, 3)) {
-                            console.log(`    systems/${systemId}/${img}`);
-                        }
-                        if (imgs.length > 3) {
-                            console.log(`    ... and ${imgs.length - 3} more`);
-                        }
-                    }
+                    console.log(`\n--- ${systemId} System Images (${systemImages.length} found) ---`);
+                    console.log(`Usage path starts with: "systems/${systemId}/..."`);
+                    systemImages.forEach(img => console.log(img));
                 }
             }
             
-            if (images.userData.length > 0) {
-                console.log(`\n\nUser Data Icons (${images.userData.length} found):`);
-                console.log(`Base path: ${userDataPath}`);
-                
-                for (const img of images.userData.slice(0, 10)) {
-                    console.log(`  ${img}`);
-                }
-                if (images.userData.length > 10) {
-                    console.log(`  ... and ${images.userData.length - 10} more`);
-                }
-            }
-            
-            console.log('\n=== Usage ===');
-            console.log('Use these paths in the "img" field of your objects.');
-            console.log('System icons: "systems/{systemId}/icons/..."');
-            console.log('User icons: "icons/..."');
-            
-            if (!images.core.length && Object.keys(images.systems).length === 0 && !images.userData.length) {
-                console.log('\nNo custom images found. You can:');
-                console.log('1. Add images to: ' + join(userDataPath, 'icons'));
-                console.log('2. Use external URLs (if supported by your FoundryVTT configuration)');
-                console.log('3. Use system-provided images from installed systems');
+            if (images.data.length > 0) {
+                console.log(`\n--- User Data Images (${images.data.length} found) ---`);
+                 console.log('Usage path starts with: e.g., "worlds/..." or "modules/..."');
+                images.data.forEach(img => console.log(img));
             }
             
         } catch (error) {
             console.error(`Error listing images: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
-            }
+            if (verbose) console.error(error.stack);
             process.exit(1);
         }
     }
 
-    /**
-     * Generate a random user ID for FoundryVTT (16-character alphanumeric)
-     */
-    generateUserId() {
-        // FoundryVTT expects exactly 16 alphanumeric characters
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let result = '';
-        
-        for (let i = 0; i < 16; i++) {
-            result += chars[Math.floor(Math.random() * chars.length)];
-        }
-        
-        return result;
-    }
-
-    /**
-     * Generate a random document ID for FoundryVTT
-     */
-    generateDocumentId() {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let result = '';
-        const bytes = randomBytes(16);
-        
-        for (let i = 0; i < 16; i++) {
-            result += chars[bytes[i] % chars.length];
-        }
-        
-        return result;
-    }
 
 }
 

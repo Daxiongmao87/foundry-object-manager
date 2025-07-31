@@ -84,3 +84,78 @@ Target command format: `./foundry-manager.mjs -s '<system_name>' -t '<object_typ
   - Stop duplicating code
   - Stop ignoring using FoundryVTT source code
   - Doing this is against the fundamental purpose of this project
+
+## D&D 5e System Object Creation Guidelines
+
+When creating or updating items in the D&D 5e system, be aware of these critical structural requirements:
+
+### Weapon Activities
+Weapons in D&D 5e v4+ require an `activities` object within the `system` object to function properly. Without this, weapons cannot be rolled for attacks.
+
+**Required Structure:**
+```json
+{
+  "system": {
+    "activities": {
+      "[RANDOM_16_CHAR_ID]": {
+        "_id": "[SAME_RANDOM_16_CHAR_ID]",
+        "type": "attack",
+        "activation": {
+          "type": "action",
+          "value": 1,
+          "condition": "",
+          "override": false
+        },
+        "consumption": {
+          "scaling": { "allowed": false },
+          "spellSlot": true,
+          "targets": []
+        },
+        "description": {},
+        "duration": {
+          "units": "inst",
+          "concentration": false,
+          "override": false
+        },
+        "effects": [],
+        "range": { "override": false },
+        "target": {
+          "template": { "contiguous": false, "units": "ft" },
+          "affects": { "choice": false },
+          "override": false,
+          "prompt": true
+        },
+        "uses": { "spent": 0, "recovery": [] },
+        "attack": {
+          "critical": { "threshold": null },
+          "flat": false,
+          "type": {
+            "value": "melee",  // or "ranged"
+            "classification": "weapon"
+          },
+          "bonus": ""
+        },
+        "damage": {
+          "critical": { "bonus": "" },
+          "includeBase": true,
+          "parts": []
+        },
+        "sort": 0
+      }
+    }
+  }
+}
+```
+
+### Key Points:
+1. **Activities must be inside `system`**: The activities object must be at `system.activities`, not at the root level
+2. **Generate proper IDs**: Use `FoundryValidator.generateRandomId()` to create 16-character alphanumeric IDs
+3. **Activity ID appears twice**: The ID is both the key and the `_id` property within the activity
+4. **Study existing items**: Use the search functionality to examine working items (like Blackrazor) as templates
+
+### Different Data Formats
+Be aware that items may use different data formats depending on when they were created:
+- **Newer format** (like Blackrazor): Uses structured `type` object, `damage.base` with types array
+- **Older format** (like Demon Howl): Uses simple strings for `weaponType`, `damage.parts` array
+
+Both formats can coexist, but activities structure remains consistent.
