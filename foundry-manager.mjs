@@ -101,6 +101,10 @@ class FoundryValidator {
             'list-images': {
                 type: 'boolean',
                 description: 'List available images from core and user data'
+            },
+            schema: {
+                type: 'boolean',
+                description: 'Extract and display the expected structure (schema) for an object type'
             }
         };
 
@@ -128,6 +132,7 @@ class FoundryValidator {
                 help: values.help,
                 noImage: values['no-image'],
                 listImages: values['list-images'],
+                schema: values.schema,
                 jsonString: positionals[0]
             };
         } catch (error) {
@@ -161,6 +166,7 @@ OPTIONS:
   --json <number>         Show JSON data (specify max characters)
   --no-image              Bypass mandatory image requirement for objects
   --list-images           List available images from core and user data
+  --schema                Extract and display the expected structure (schema)
   -v, --verbose           Enable verbose output
   -h, --help              Show this help message
 
@@ -210,12 +216,86 @@ EXAMPLES:
   # List available images
   foundry-manager.mjs --list-images
 
+  # Extract schema for weapon type in D&D 5e
+  foundry-manager.mjs -s dnd5e -t weapon --schema
+
 EXIT CODES:
   0    Validation successful
   1    Validation failed or error occurred
 `;
         console.log(helpText.trim());
     }
+
+    /**
+     * Extract and display the schema for a given object type
+     */
+    async extractSchema(args) {
+        const { system, type, verbose } = args;
+
+        // Validate required arguments for schema extraction
+        if (!system) {
+            console.error('Error: System (-s) is required for schema extraction');
+            console.error('Use -l to list available systems');
+            process.exit(1);
+        }
+
+        if (!type) {
+            console.error('Error: Object type (-t) is required for schema extraction');
+            console.error(`Use -s ${system} -l to list available object types`);
+            process.exit(1);
+        }
+
+        if (verbose) {
+            console.log(`Extracting schema for ${type} in system: ${system}`);
+        }
+
+        try {
+            // Validate system and object type combination
+            const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
+            if (!validation.valid) {
+                console.error(`Error: ${validation.error}`);
+                process.exit(1);
+            }
+
+            const documentType = validation.documentType;
+            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
+
+            if (verbose) {
+                console.log(`Loading system: ${system}`);
+                console.log(`Document type: ${documentType}`);
+            }
+
+            // Create a minimal document to extract the actual structure
+            const dummyData = {
+                name: "SchemaExtraction",
+                type: type
+            };
+
+            // Use FoundryVTT's actual document creation to get the real structure
+            const documentData = await this.createFoundryDocument(dummyData, documentType, {
+                systemId: system,
+                systemVersion: systemInfo.version,
+                userId: 'VALIDATEONLYUSER', // Same as validation-only mode
+                noImage: true
+            });
+
+            // Display the actual structure that FoundryVTT creates
+            console.log(`Expected structure for ${type} (${documentType}) in ${system}:`);
+            console.log('='.repeat(60));
+            console.log('This is the actual structure created by FoundryVTT with all validation and defaults applied:');
+            console.log('');
+            console.log(JSON.stringify(documentData, null, 2));
+
+        } catch (error) {
+            console.error(`Schema extraction error: ${error.message}`);
+            if (verbose) {
+                console.error(error.stack);
+            }
+            process.exit(1);
+        }
+    }
+
+
 
     /**
      * Main execution function
@@ -249,6 +329,12 @@ EXIT CODES:
             // Handle image listing
             if (args.listImages) {
                 await this.listAvailableImages(args);
+                process.exit(0);
+            }
+
+            // Handle schema extraction
+            if (args.schema) {
+                await this.extractSchema(args);
                 process.exit(0);
             }
 
