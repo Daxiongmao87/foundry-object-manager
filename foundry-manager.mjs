@@ -308,10 +308,14 @@ EXIT CODES:
             console.log(JSON.stringify(documentData, null, 2));
 
         } catch (error) {
-            console.error(`Schema extraction error: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
-            }
+            // Enhanced error handling for schema extraction
+            await this.handleEnhancedError(error, {
+                operation: 'schema extraction',
+                system: system,
+                type: type,
+                world: world,
+                verbose: verbose
+            });
             process.exit(1);
         }
     }
@@ -331,9 +335,23 @@ EXIT CODES:
         }
         
         // Check if this is an invalid object type error
-        if (error.message.includes('not found in system')) {
+        if (error.message.includes('not found in system') || error.message.includes('is not a valid type for')) {
             console.error('\n📋 Available object types for this system:');
-            console.error(`Run: ./foundry-manager.mjs --list-types -s ${system}`);
+            
+            // Get and display the actual available types
+            try {
+                const systemInfo = await this.systemDiscovery.getSystemInfo(system);
+                const objectTypes = await this.systemDiscovery.getSystemObjectTypes(system);
+                
+                for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
+                    console.error(`\n${docType} Document Types:`);
+                    for (const subtype of config.subtypes) {
+                        console.error(`  • ${subtype}`);
+                    }
+                }
+            } catch (listError) {
+                console.error(`Run: ./foundry-manager.mjs --list-types -s ${system}`);
+            }
             console.error('');
             return;
         }
