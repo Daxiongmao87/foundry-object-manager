@@ -13,6 +13,8 @@ import { randomBytes } from 'crypto';
 import { FoundryServerManagerPatched as FoundryServerManager, ServerState } from './foundry-server-manager-patched.mjs';
 import { FoundryPuppeteerValidator, ValidationError } from './foundry-puppeteer-validator.mjs';
 import CredentialManager from './credential-manager.mjs';
+import SystemDiscovery from './system-discovery.mjs';
+import { WorldManager } from './world-manager.mjs';
 
 // Progress indicator helper
 class ProgressIndicator {
@@ -58,6 +60,7 @@ export class FoundryManager {
         this.validator = null;
         this.initialized = false;
         this.credentialManager = new CredentialManager();
+        this.systemDiscovery = new SystemDiscovery({ verbose: options.verbose });
         this.progress = new ProgressIndicator();
         this.verbose = options.verbose || false;
         this.selectedWorld = null;
@@ -129,6 +132,11 @@ export class FoundryManager {
             await this.validator.initialize();
             this.progress.stop(true, 'Validator initialized');
 
+            // Initialize WorldManager
+            this.progress.start('Initializing WorldManager...');
+            this.worldManager = new WorldManager(this.validator);
+            this.progress.stop(true, 'WorldManager initialized');
+
             // Get system info
             const status = await this.serverManager.getServerStatus();
             this.selectedSystem = status.system;
@@ -168,14 +176,18 @@ export class FoundryManager {
         const availableTypes = await this.validator.getAvailableTypes();
         
         let documentType = null;
-        if (availableTypes.types.Item[type]) {
+        // First, check if the type itself is a top-level document type (e.g., Scene, JournalEntry)
+        if (availableTypes.types[type]) {
+            documentType = type;
+        } else if (availableTypes.types.Item[type]) {
             documentType = 'Item';
         } else if (availableTypes.types.Actor[type]) {
             documentType = 'Actor';
         } else {
-            // Check other document types
+            // Check other document types by iterating through their subtypes
             for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
-                if (subtypes[type]) {
+                // Check if the provided type matches a subtype key (which might be lowercase)
+                if (subtypes[type] || subtypes[type.toLowerCase()]) {
                     documentType = docType;
                     break;
                 }
@@ -210,13 +222,18 @@ export class FoundryManager {
         const availableTypes = await this.validator.getAvailableTypes();
         
         let documentType = null;
-        if (availableTypes.types.Item[type]) {
+        // First, check if the type itself is a top-level document type (e.g., Scene, JournalEntry)
+        if (availableTypes.types[type]) {
+            documentType = type;
+        } else if (availableTypes.types.Item[type]) {
             documentType = 'Item';
         } else if (availableTypes.types.Actor[type]) {
             documentType = 'Actor';
         } else {
+            // Check other document types by iterating through their subtypes
             for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
-                if (subtypes[type]) {
+                // Check if the provided type matches a subtype key (which might be lowercase)
+                if (subtypes[type] || subtypes[type.toLowerCase()]) {
                     documentType = docType;
                     break;
                 }
@@ -288,12 +305,16 @@ class FoundryValidator {
             system: {
                 type: 'string',
                 short: 's',
-                description: 'System name (not used with Puppeteer validation)'
+                description: 'System name (e.g., dnd5e, pf2e) for type discovery'
             },
             type: {
                 type: 'string',
                 short: 't',
                 description: 'Object type (e.g., actor, item, weapon, spell)'
+            },
+            'list-systems': {
+                type: 'boolean',
+                description: 'List all available game systems'
             },
             'list-worlds': {
                 type: 'boolean',
@@ -301,7 +322,7 @@ class FoundryValidator {
             },
             'list-types': {
                 type: 'boolean',
-                description: 'List available object types'
+                description: 'List available object types (use with -s for specific system)'
             },
             schema: {
                 type: 'boolean',
@@ -317,6 +338,20 @@ class FoundryValidator {
                 short: 'f',
                 description: 'JSON file containing object data'
             },
+            read: {
+                type: 'boolean',
+                short: 'r',
+                description: 'Read/list documents'
+            },
+            insert: {
+                type: 'boolean',
+                short: 'i',
+                description: 'Insert/create a new document'
+            },
+            name: {
+                type: 'string',
+                description: 'Filter by name (with wildcards *, ?)'
+            },
             create: {
                 type: 'boolean',
                 short: 'c',
@@ -326,6 +361,15 @@ class FoundryValidator {
                 type: 'boolean',
                 short: 'u',
                 description: 'Validate for document update'
+            },
+            delete: {
+                type: 'boolean',
+                short: 'd',
+                description: 'Delete a document by ID'
+            },
+            id: {
+                type: 'string',
+                description: 'Document ID for update/delete operations'
             },
             verbose: {
                 type: 'boolean',
@@ -375,16 +419,23 @@ USAGE:
   foundry-manager.mjs [options] [json_string]
 
 OPTIONS:
+  -s, --system <id>               System ID (e.g., dnd5e, pf2e) for type discovery
   -t, --type <type>               Object type (e.g., weapon, npc, spell)
   -w, --world <id>                World ID to use (defaults to first available)
   -f, --file <path>               Read JSON from file
+  -r, --read                      Read/list documents
+  -i, --insert                    Insert/create a new document
+  --name <pattern>                Filter by name (with wildcards *, ?)
   -c, --create                    Validate for creation (default)
   -u, --update                    Validate for update
+  -d, --delete                    Delete a document by ID
+  --id <id>                       Document ID for update/delete operations
   -v, --verbose                   Enable verbose output
   -h, --help                      Show this help message
 
+  --list-systems                  List all available game systems
   --list-worlds                   List available worlds
-  --list-types                    List available object types
+  --list-types                    List available object types (use with -s for specific system)
   --schema                        Extract and display expected schema
 
   --set-admin-password            Set administrator password
@@ -393,20 +444,29 @@ OPTIONS:
   --clear-credentials             Clear stored credentials
 
 EXAMPLES:
-  # Validate weapon from command line
-  foundry-manager.mjs -t weapon '{"name": "Longsword", "type": "weapon"}'
+  # System Discovery
+  foundry-manager.mjs --list-systems                              # List all systems
+  foundry-manager.mjs --list-types -s dnd5e                       # List D&D 5e types
+  foundry-manager.mjs --list-types -s pf2e                        # List Pathfinder 2e types
 
-  # Validate from file
+  # Validation
+  foundry-manager.mjs -t weapon '{"name": "Longsword", "type": "weapon"}'
   foundry-manager.mjs -t npc -f my-npc.json
 
-  # Get schema for a type
-  foundry-manager.mjs -t weapon --schema
+  # Schema extraction
+  foundry-manager.mjs -t weapon --schema                          # From active world
+  foundry-manager.mjs -s dnd5e -t weapon --schema                 # From specific system
 
-  # List available types
-  foundry-manager.mjs --list-types
+  # World operations
+  foundry-manager.mjs --list-worlds                               # List worlds
+  foundry-manager.mjs -w myworld -t actor actor.json              # Use specific world
 
-  # Use specific world
-  foundry-manager.mjs -w myworld -t actor actor.json
+  # CRUD Operations  
+  foundry-manager.mjs -w world -t character -r                    # READ: List all characters
+  foundry-manager.mjs -w world -t character -r --name "Hero*"     # SEARCH: Find by name pattern
+  foundry-manager.mjs -w world -t character -i '{"name":"Hero"}'  # CREATE: Insert new character
+  foundry-manager.mjs -w world -t character -u --id "abc123" '{"hp":{"value":50}}' # UPDATE: Modify by ID
+  foundry-manager.mjs -w world -t character -d --id "abc123"      # DELETE: Remove by ID
 
 EXIT CODES:
   0    Validation successful
@@ -480,6 +540,18 @@ EXIT CODES:
                 }
             });
 
+            // Handle list systems (doesn't require server startup)
+            if (args['list-systems']) {
+                await this.manager.systemDiscovery.listSystems();
+                process.exit(0);
+            }
+
+            // Handle list types with system specified (doesn't require server startup)
+            if (args['list-types'] && args.system) {
+                await this.manager.systemDiscovery.listSystemObjectTypes(args.system);
+                process.exit(0);
+            }
+
             // Handle list worlds
             if (args['list-worlds']) {
                 const worlds = await this.manager.listWorlds();
@@ -496,17 +568,120 @@ EXIT CODES:
             // Handle list types
             if (args['list-types']) {
                 const types = await this.manager.listTypes();
-                console.log(`\n📋 Available Types for ${types.systemTitle}:`);
+                console.log(`
+📋 Available Types for ${types.systemTitle}:`);
                 
                 for (const [docType, subtypes] of Object.entries(types.types)) {
                     const subtypeList = Object.keys(subtypes);
                     if (subtypeList.length > 0) {
-                        console.log(`\n${docType}:`);
+                        console.log(`
+${docType}:`);
                         subtypeList.forEach(type => {
                             console.log(`   - ${type}: ${subtypes[type]}`);
                         });
                     }
                 }
+                await this.manager.cleanup();
+                process.exit(0);
+            }
+
+            // Handle read/search documents
+            if (args.read) {
+                if (!args.type) {
+                    console.error('Error: Document type (-t) is required for read/search operations.');
+                    process.exit(1);
+                }
+                console.log(`
+🔍 Searching for ${args.type} documents...`);
+                const documents = await this.manager.worldManager.search(args.type, args.name);
+                if (documents.length === 0) {
+                    console.log('   No documents found matching criteria.');
+                } else {
+                    console.log(`   Found ${documents.length} documents:`);
+                    documents.forEach(doc => {
+                        console.log(`   - ID: ${doc.id}, Name: ${doc.name}`);
+                    });
+                }
+                await this.manager.cleanup();
+                process.exit(0);
+            }
+
+            // Handle insert/create document
+            if (args.insert) {
+                if (!args.type) {
+                    console.error('Error: Document type (-t) is required for insert operations.');
+                    process.exit(1);
+                }
+                let jsonData;
+                if (args.file) {
+                    if (!existsSync(args.file)) {
+                        console.error(`Error: File not found: ${args.file}`);
+                        process.exit(1);
+                    }
+                    const fileContent = readFileSync(args.file, 'utf8');
+                    jsonData = JSON.parse(fileContent);
+                } else if (args.positionals.length > 0) {
+                    jsonData = JSON.parse(args.positionals[0]);
+                } else {
+                    console.error('Error: JSON data or file (-f) is required for insert operations.');
+                    process.exit(1);
+                }
+
+                console.log(`
+➕ Creating ${args.type} document...`);
+                const result = await this.manager.worldManager.create(args.type, jsonData);
+                console.log(`✅ Document created successfully! ID: ${result.id}, Name: ${result.name}`);
+                await this.manager.cleanup();
+                process.exit(0);
+            }
+
+            // Handle update document
+            if (args.update) {
+                if (!args.type) {
+                    console.error('Error: Document type (-t) is required for update operations.');
+                    process.exit(1);
+                }
+                if (!args.id) {
+                    console.error('Error: Document ID (--id) is required for update operations.');
+                    process.exit(1);
+                }
+                let jsonData;
+                if (args.file) {
+                    if (!existsSync(args.file)) {
+                        console.error(`Error: File not found: ${args.file}`);
+                        process.exit(1);
+                    }
+                    const fileContent = readFileSync(args.file, 'utf8');
+                    jsonData = JSON.parse(fileContent);
+                } else if (args.positionals.length > 0) {
+                    jsonData = JSON.parse(args.positionals[0]);
+                } else {
+                    console.error('Error: JSON data or file (-f) is required for update operations.');
+                    process.exit(1);
+                }
+
+                console.log(`\n🔄 Updating ${args.type} document with ID: ${args.id}...`);
+                const result = await this.manager.worldManager.update(args.type, args.id, jsonData);
+                console.log(`✅ Document updated successfully! ID: ${result.id}, Name: ${result.name}`);
+                await this.manager.cleanup();
+                process.exit(0);
+            }
+
+            // Handle delete document
+            if (args.delete) {
+                if (!args.type) {
+                    console.error('Error: Document type (-t) is required for delete operations.');
+                    process.exit(1);
+                }
+                if (!args.id) {
+                    console.error('Error: Document ID (--id) is required for delete operations.');
+                    process.exit(1);
+                }
+
+                console.log(`
+🗑️ Deleting ${args.type} document with ID: ${args.id}...`);
+                const result = await this.manager.worldManager.delete(args.type, args.id);
+                console.log(`✅ Document with ID: ${result.id} deleted successfully!`);
                 await this.manager.cleanup();
                 process.exit(0);
             }

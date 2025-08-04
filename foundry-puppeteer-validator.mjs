@@ -32,7 +32,7 @@ export class FoundryPuppeteerValidator {
         }
         
         this.serverManager = serverManager;
-        this.validationTimeout = options.validationTimeout || 30000; // 30 seconds default
+        this.validationTimeout = options.validationTimeout || 60000; // 60 seconds default
         this.initialized = false;
         this._systemCache = null;
         this._objectTypeCache = null;
@@ -106,7 +106,7 @@ export class FoundryPuppeteerValidator {
                             console.log('   World element clicked, waiting for navigation...');
                             await this.serverManager.page.waitForNavigation({ 
                                 waitUntil: 'networkidle0', 
-                                timeout: 30000 
+                                timeout: this.validationTimeout 
                             });
                         }
                     } catch (error) {
@@ -132,7 +132,7 @@ export class FoundryPuppeteerValidator {
                     if (joinButton) {
                         console.log('   Submitting admin login...');
                         await Promise.all([
-                            this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+                            this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: this.validationTimeout }),
                             joinButton.click()
                         ]);
                         console.log('✅ Admin authentication completed');
@@ -148,7 +148,7 @@ export class FoundryPuppeteerValidator {
                         const joinButton = await this.serverManager.page.$('button[type="submit"], input[type="submit"]');
                         if (joinButton) {
                             await joinButton.click();
-                            await this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                            await this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: this.validationTimeout });
                         }
                     }
                 }

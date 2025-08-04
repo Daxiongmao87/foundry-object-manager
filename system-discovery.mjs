@@ -1,255 +1,330 @@
 #!/usr/bin/env node
 
 /**
- * FoundryVTT System Discovery
- * Scans and parses FoundryVTT systems and their data models
+ * SystemDiscovery - Game System Enumeration and Analysis
+ * 
+ * Discovers available FoundryVTT game systems and their object types
+ * without requiring full server initialization.
  */
 
+import { readdir, readFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
-import { readFile, readdir, stat } from 'fs/promises';
-import { join } from 'path';
-import FoundryEnvironment from './foundry-environment.mjs';
+import { join, resolve } from 'path';
 
-class SystemDiscovery {
-    constructor(foundryEnv = null) {
-        this.foundryEnv = foundryEnv || new FoundryEnvironment();
-        this.systemCache = new Map();
+export class SystemDiscovery {
+    constructor(options = {}) {
+        this.dataPath = options.dataPath || this._resolveDataPath();
+        this.systemsPath = join(this.dataPath, 'systems');
+        this.verbose = options.verbose || false;
+        this._systemCache = null;
     }
 
     /**
-     * Initialize the discovery system
+     * Resolve FoundryVTT data path
+     * @private
      */
-    async initialize() {
-        if (!this.foundryEnv.initialized) {
-            await this.foundryEnv.initialize();
+    _resolveDataPath() {
+        // Check for symbolic link first (development setup)
+        const symlinkPath = resolve('./foundry-data');
+        if (existsSync(symlinkPath)) {
+            return resolve(symlinkPath);
         }
+        
+        // Default FoundryVTT data locations
+        const possiblePaths = [
+            process.env.FOUNDRY_VTT_DATA_PATH,
+            join(process.env.HOME || process.env.USERPROFILE, '.local/share/FoundryVTT/Data'),
+            join(process.env.HOME || process.env.USERPROFILE, 'FoundryVTT/Data'),
+            './foundry-data'
+        ].filter(path => path && existsSync(path));
+
+        if (possiblePaths.length === 0) {
+            throw new Error('Could not locate FoundryVTT data directory');
+        }
+
+        return resolve(possiblePaths[0]);
     }
 
     /**
-     * Get all available systems
+     * Get all available game systems
+     * @returns {Promise<Array>} List of system information
      */
     async getAllSystems() {
-        await this.initialize();
-        
-        const systems = await this.foundryEnv.getAvailableSystems();
-        const systemList = [];
-
-        for (const system of systems) {
-            try {
-                const systemInfo = await this.getSystemInfo(system.id);
-                systemList.push(systemInfo);
-            } catch (error) {
-                console.warn(`Failed to get info for system ${system.id}:`, error.message);
-            }
+        if (this._systemCache) {
+            return this._systemCache;
         }
 
-        return systemList;
+        if (this.verbose) {
+            console.log(`🔍 Scanning systems directory: ${this.systemsPath}`);
+        }
+
+        if (!existsSync(this.systemsPath)) {
+            console.warn(`⚠️  Systems directory not found: ${this.systemsPath}`);
+            return [];
+        }
+
+        const systems = [];
+        
+        try {
+            const entries = await readdir(this.systemsPath);
+            
+            for (const entry of entries) {
+                const systemPath = join(this.systemsPath, entry);
+                const systemStat = await stat(systemPath);
+                
+                if (!systemStat.isDirectory()) {
+                    continue;
+                }
+
+                const manifestPath = join(systemPath, 'system.json');
+                if (!existsSync(manifestPath)) {
+                    if (this.verbose) {
+                        console.log(`   ⚠️  No system.json found for: ${entry}`);
+                    }
+                    continue;
+                }
+
+                try {
+                    const manifestContent = await readFile(manifestPath, 'utf8');
+                    const manifest = JSON.parse(manifestContent);
+                    
+                    const systemInfo = {
+                        id: manifest.id || entry,
+                        title: manifest.title || entry,
+                        version: manifest.version || 'unknown',
+                        author: manifest.author || 'unknown',
+                        description: manifest.description || '',
+                        compatibility: manifest.compatibility || {},
+                        path: systemPath,
+                        manifest: manifest
+                    };
+
+                    systems.push(systemInfo);
+                    
+                    if (this.verbose) {
+                        console.log(`   ✅ Found system: ${systemInfo.title} (${systemInfo.id})`);
+                    }
+
+                } catch (error) {
+                    if (this.verbose) {
+                        console.log(`   ❌ Error reading system.json for ${entry}: ${error.message}`);
+                    }
+                }
+            }
+
+            this._systemCache = systems;
+            
+            if (this.verbose) {
+                console.log(`📦 Total systems discovered: ${systems.length}`);
+            }
+
+            return systems;
+
+        } catch (error) {
+            console.error(`❌ Error scanning systems directory: ${error.message}`);
+            return [];
+        }
     }
 
     /**
-     * Get detailed information about a specific system
+     * Get system information by ID
+     * @param {string} systemId - System identifier
+     * @returns {Promise<Object|null>} System information or null if not found
      */
     async getSystemInfo(systemId) {
-        if (this.systemCache.has(systemId)) {
-            return this.systemCache.get(systemId);
-        }
+        const systems = await this.getAllSystems();
+        return systems.find(system => system.id === systemId) || null;
+    }
 
-        await this.initialize();
-
-        const systemPath = join(this.foundryEnv.systemsPath, systemId);
-        if (!existsSync(systemPath)) {
+    /**
+     * Get object types for a specific system
+     * @param {string} systemId - System identifier
+     * @returns {Promise<Object>} Object types organized by document type
+     */
+    async getSystemObjectTypes(systemId) {
+        const systemInfo = await this.getSystemInfo(systemId);
+        if (!systemInfo) {
             throw new Error(`System not found: ${systemId}`);
         }
 
-        // Load system manifest
-        const manifestPath = join(systemPath, 'system.json');
-        if (!existsSync(manifestPath)) {
-            throw new Error(`System manifest not found: ${systemId}`);
-        }
-
-        const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
-        
-        // Extract document types from manifest first
-        const documentTypes = this.extractDocumentTypes(manifest);
-        
-        // Load system to register DataModels (for potential future use)
-        try {
-            await this.foundryEnv.loadSystem(systemId);
-        } catch (error) {
-            console.warn(`Failed to load system ${systemId}:`, error.message);
-        }
-        
-
-        const systemInfo = {
-            id: systemId,
-            title: manifest.title || systemId,
-            description: manifest.description || '',
-            version: manifest.version || 'unknown',
-            compatibility: manifest.compatibility || {},
-            documentTypes: documentTypes,
-            path: systemPath
+        const types = {
+            actors: {},
+            items: {},
+            other: {}
         };
 
-        this.systemCache.set(systemId, systemInfo);
-        return systemInfo;
-    }
+        // Extract types from system manifest
+        const manifest = systemInfo.manifest;
 
-    /**
-     * Extract document types from system manifest
-     */
-    extractDocumentTypes(manifest) {
-        const documentTypes = {};
+        // Get actor types
+        if (manifest.documentTypes?.Actor) {
+            for (const [type, config] of Object.entries(manifest.documentTypes.Actor)) {
+                types.actors[type] = config.label || type;
+            }
+        }
 
-        if (manifest.documentTypes) {
-            for (const [docType, subtypes] of Object.entries(manifest.documentTypes)) {
-                documentTypes[docType] = {
-                    subtypes: Object.keys(subtypes),
-                    htmlFields: {}
-                };
+        // Get item types
+        if (manifest.documentTypes?.Item) {
+            for (const [type, config] of Object.entries(manifest.documentTypes.Item)) {
+                types.items[type] = config.label || type;
+            }
+        }
 
-                // Extract HTML fields for each subtype
-                for (const [subtype, config] of Object.entries(subtypes)) {
-                    if (config.htmlFields) {
-                        documentTypes[docType].htmlFields[subtype] = config.htmlFields;
+        // Get other document types
+        for (const [docType, typeConfig] of Object.entries(manifest.documentTypes || {})) {
+            if (docType !== 'Actor' && docType !== 'Item') {
+                types.other[docType.toLowerCase()] = {};
+                if (typeof typeConfig === 'object') {
+                    for (const [type, config] of Object.entries(typeConfig)) {
+                        types.other[docType.toLowerCase()][type] = config.label || type;
                     }
                 }
             }
         }
 
-        return documentTypes;
-    }
-
-    /**
-     * Get available object types for a specific system
-     */
-    async getSystemObjectTypes(systemId) {
-        const systemInfo = await this.getSystemInfo(systemId);
-        const objectTypes = {};
-
-        for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
-            // Add base document type
-            objectTypes[docType.toLowerCase()] = {
-                documentType: docType,
-                subtypes: config.subtypes,
-                description: this.getDocumentTypeDescription(docType)
-            };
-            
-            // Add each subtype as a separate object type
-            for (const subtype of config.subtypes) {
-                objectTypes[subtype] = {
-                    documentType: docType,
-                    subtype: subtype,
-                    description: `${docType} of type '${subtype}'`
-                };
-            }
-        }
-
-        return objectTypes;
-    }
-
-    /**
-     * Get description for document types
-     */
-    getDocumentTypeDescription(docType) {
-        const descriptions = {
-            'Actor': 'Characters, NPCs, monsters, and other entities',
-            'Item': 'Equipment, spells, features, and other items',
-            'Scene': 'Maps and environments for gameplay',
-            'JournalEntry': 'Notes, lore, and reference materials',
-            'Macro': 'Custom scripts and automated actions',
-            'RollTable': 'Random generation tables',
-            'Playlist': 'Audio playlists and ambient sounds',
-            'Combat': 'Combat encounters and initiative tracking',
-            'Combatant': 'Individual participants in combat'
+        return {
+            systemId,
+            systemTitle: systemInfo.title,
+            types
         };
-
-        return descriptions[docType] || `${docType} documents`;
     }
 
     /**
-     * List available systems in a user-friendly format
+     * List systems for CLI display
+     * @returns {Promise<void>}
      */
     async listSystems() {
         const systems = await this.getAllSystems();
         
         if (systems.length === 0) {
-            return 'No FoundryVTT systems found. Please install some systems first.';
+            console.log('📦 No game systems found');
+            return;
         }
 
-        const output = ['Available FoundryVTT Systems:', ''];
+        console.log(`\\n📦 Available Game Systems (${systems.length}):`);
+        console.log('='.repeat(60));
         
         for (const system of systems) {
-            output.push(`• ${system.id} - ${system.title}`);
+            console.log(`\\n${system.id}:`);
+            console.log(`   Title: ${system.title}`);
+            console.log(`   Version: ${system.version}`);
+            console.log(`   Author: ${system.author}`);
             if (system.description) {
-                output.push(`  ${system.description}`);
+                const desc = system.description.length > 80 
+                    ? system.description.substring(0, 77) + '...'
+                    : system.description;
+                console.log(`   Description: ${desc}`);
             }
-            output.push(`  Version: ${system.version}`);
-            
-            const docTypeCount = Object.keys(system.documentTypes).length;
-            if (docTypeCount > 0) {
-                output.push(`  Document Types: ${Object.keys(system.documentTypes).join(', ')}`);
-            }
-            output.push('');
         }
-
-        return output.join('\n');
     }
 
     /**
-     * List available object types for a system
+     * List object types for a system
+     * @param {string} systemId - System identifier
+     * @returns {Promise<void>}
      */
     async listSystemObjectTypes(systemId) {
         try {
-            const systemInfo = await this.getSystemInfo(systemId);
+            const typeInfo = await this.getSystemObjectTypes(systemId);
             
-            if (Object.keys(systemInfo.documentTypes).length === 0) {
-                return `No object types found for system: ${systemId}`;
-            }
+            console.log(`\\n📋 Object Types for ${typeInfo.systemTitle} (${systemId}):`);
+            console.log('='.repeat(60));
 
-            const output = [`Object types available in system '${systemId}':`, ''];
-            
-            for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
-                output.push(`${docType} Document Types:`);
-                
-                if (config.subtypes.length > 0) {
-                    for (const subtype of config.subtypes) {
-                        output.push(`  • ${subtype}`);
-                    }
-                } else {
-                    output.push(`  • ${docType.toLowerCase()} (base type)`);
+            // Show Actor types
+            const actorTypes = Object.keys(typeInfo.types.actors);
+            if (actorTypes.length > 0) {
+                console.log('\\n🎭 Actor Types:');
+                for (const [type, label] of Object.entries(typeInfo.types.actors)) {
+                    console.log(`   - ${type}: ${label}`);
                 }
-                output.push('');
             }
 
-            return output.join('\n');
+            // Show Item types
+            const itemTypes = Object.keys(typeInfo.types.items);
+            if (itemTypes.length > 0) {
+                console.log('\\n🎒 Item Types:');
+                for (const [type, label] of Object.entries(typeInfo.types.items)) {
+                    console.log(`   - ${type}: ${label}`);
+                }
+            }
+
+            // Show other document types
+            for (const [docType, subtypes] of Object.entries(typeInfo.types.other)) {
+                const subtypeKeys = Object.keys(subtypes);
+                if (subtypeKeys.length > 0) {
+                    console.log(`\\n📄 ${docType.toUpperCase()} Types:`);
+                    for (const [type, label] of Object.entries(subtypes)) {
+                        console.log(`   - ${type}: ${label}`);
+                    }
+                }
+            }
+
+            const totalTypes = actorTypes.length + itemTypes.length + 
+                Object.values(typeInfo.types.other).reduce((sum, types) => sum + Object.keys(types).length, 0);
+            
+            console.log(`\\n📊 Total object types: ${totalTypes}`);
+
         } catch (error) {
-            return `Error listing object types for system '${systemId}': ${error.message}`;
+            console.error(`❌ Error: ${error.message}`);
+            console.error('Use --list-systems to see available systems');
         }
     }
 
     /**
-     * Validate if a system and object type combination is valid
+     * Validate system and object type combination
+     * @param {string} systemId - System identifier
+     * @param {string} objectType - Object type to validate
+     * @returns {Promise<Object>} Validation result
      */
     async validateSystemObjectType(systemId, objectType) {
         try {
-            const objectTypes = await this.getSystemObjectTypes(systemId);
+            const typeInfo = await this.getSystemObjectTypes(systemId);
             
-            // Check if object type exists (case-insensitive)
-            const normalizedObjectType = objectType.toLowerCase();
-            
-            if (!objectTypes[normalizedObjectType]) {
-                const availableTypes = Object.keys(objectTypes);
-                throw new Error(
-                    `Object type '${objectType}' not found in system '${systemId}'. ` +
-                    `Available types: ${availableTypes.join(', ')}`
-                );
+            // Check in actors
+            if (typeInfo.types.actors[objectType]) {
+                return {
+                    valid: true,
+                    documentType: 'Actor',
+                    subtype: objectType,
+                    label: typeInfo.types.actors[objectType]
+                };
+            }
+
+            // Check in items
+            if (typeInfo.types.items[objectType]) {
+                return {
+                    valid: true,
+                    documentType: 'Item',
+                    subtype: objectType,
+                    label: typeInfo.types.items[objectType]
+                };
+            }
+
+            // Check in other document types
+            for (const [docType, subtypes] of Object.entries(typeInfo.types.other)) {
+                if (subtypes[objectType]) {
+                    return {
+                        valid: true,
+                        documentType: docType.toUpperCase(),
+                        subtype: objectType,
+                        label: subtypes[objectType]
+                    };
+                }
             }
 
             return {
-                valid: true,
-                documentType: objectTypes[normalizedObjectType].documentType,
-                subtypes: objectTypes[normalizedObjectType].subtypes
+                valid: false,
+                error: `Object type '${objectType}' not found in system '${systemId}'`,
+                availableTypes: {
+                    actors: Object.keys(typeInfo.types.actors),
+                    items: Object.keys(typeInfo.types.items),
+                    other: Object.keys(typeInfo.types.other).reduce((acc, docType) => {
+                        acc[docType] = Object.keys(typeInfo.types.other[docType]);
+                        return acc;
+                    }, {})
+                }
             };
+
         } catch (error) {
             return {
                 valid: false,
@@ -259,17 +334,36 @@ class SystemDiscovery {
     }
 
     /**
-     * Get FoundryVTT document class for a specific document type
+     * Auto-detect system from world
+     * @param {string} worldId - World identifier
+     * @returns {Promise<string|null>} System ID or null if not found
      */
-    async getDocumentClass(documentType) {
-        const documentPath = join(this.foundryEnv.resourcesPath, 'common', 'documents', `${documentType.toLowerCase()}.mjs`);
-        
-        try {
-            const DocumentClass = await import(`file://${documentPath}`);
-            return DocumentClass.default;
-        } catch (error) {
-            throw new Error(`Failed to load document class ${documentType}: ${error.message}`);
+    async getSystemFromWorld(worldId) {
+        const worldsPath = join(this.dataPath, 'worlds');
+        const worldPath = join(worldsPath, worldId);
+        const worldManifestPath = join(worldPath, 'world.json');
+
+        if (!existsSync(worldManifestPath)) {
+            return null;
         }
+
+        try {
+            const manifestContent = await readFile(worldManifestPath, 'utf8');
+            const manifest = JSON.parse(manifestContent);
+            return manifest.system || null;
+        } catch (error) {
+            if (this.verbose) {
+                console.error(`Error reading world manifest for ${worldId}: ${error.message}`);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Clear cached data
+     */
+    clearCache() {
+        this._systemCache = null;
     }
 }
 
