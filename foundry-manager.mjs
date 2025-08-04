@@ -3,21 +3,65 @@
 /**
  * FoundryVTT Object Validator - Main CLI Interface
  * Command-line tool for validating JSON objects against FoundryVTT system schemas
+ * 
+ * Now uses Puppeteer-based validation with real FoundryVTT engine
  */
 
 import { parseArgs } from 'util';
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync } from 'fs';
 import { randomBytes } from 'crypto';
-import FoundryEnvironment from './foundry-environment.mjs';
-import SystemDiscovery from './system-discovery.mjs';
-import WorldManager from './world-manager.mjs';
+import { FoundryServerManagerPatched as FoundryServerManager, ServerState } from './foundry-server-manager-patched.mjs';
+import { FoundryPuppeteerValidator, ValidationError } from './foundry-puppeteer-validator.mjs';
+import CredentialManager from './credential-manager.mjs';
 
-class FoundryValidator {
+// Progress indicator helper
+class ProgressIndicator {
     constructor() {
-        this.foundryEnv = new FoundryEnvironment();
-        this.systemDiscovery = new SystemDiscovery(this.foundryEnv);
-        this.worldManager = new WorldManager(this.foundryEnv);
+        this.spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        this.current = 0;
+        this.interval = null;
+        this.message = '';
+    }
+
+    start(message) {
+        this.message = message;
+        this.current = 0;
+        process.stdout.write(`\r${this.spinner[this.current]} ${this.message}`);
+        this.interval = setInterval(() => {
+            this.current = (this.current + 1) % this.spinner.length;
+            process.stdout.write(`\r${this.spinner[this.current]} ${this.message}`);
+        }, 100);
+    }
+
+    update(message) {
+        this.message = message;
+        process.stdout.write(`\r${this.spinner[this.current]} ${this.message}`);
+    }
+
+    stop(success = true, finalMessage = null) {
+        if (this.interval) {
+            clearInterval(this.interval);
+            this.interval = null;
+        }
+        const icon = success ? '✅' : '❌';
+        const msg = finalMessage || this.message;
+        process.stdout.write(`\r${icon} ${msg}\n`);
+    }
+}
+
+/**
+ * Main FoundryManager class using Puppeteer-based validation
+ */
+export class FoundryManager {
+    constructor(options = {}) {
+        this.serverManager = new FoundryServerManager(options.server || {});
+        this.validator = null;
+        this.initialized = false;
+        this.credentialManager = new CredentialManager();
+        this.progress = new ProgressIndicator();
+        this.verbose = options.verbose || false;
+        this.selectedWorld = null;
+        this.selectedSystem = null;
     }
 
     /**
@@ -37,38 +81,203 @@ class FoundryValidator {
     }
 
     /**
-     * Extract only the fields that were requested to be updated, but with validated values
-     * This ensures we don't overwrite fields that weren't in the original update request
-     * @param {Object} originalUpdate - The original update data from user input
-     * @param {Object} validatedDocument - The fully validated document
-     * @returns {Object} The validated update data containing only requested fields
+     * Initialize the validation environment
+     * @param {string} worldId - Optional world ID to use
      */
-    static extractChangedFields(originalUpdate, validatedDocument) {
-        const extractedUpdate = {};
+    async initialize(worldId = null) {
+        if (this.initialized) {
+            return;
+        }
 
-        function extractNestedFields(updateObj, validatedObj, targetObj) {
-            for (const [key, value] of Object.entries(updateObj)) {
-                if (value === null) {
-                    // Explicitly setting field to null
-                    targetObj[key] = null;
-                } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                    // Nested object - recurse
-                    if (validatedObj && typeof validatedObj[key] === 'object' && validatedObj[key] !== null) {
-                        targetObj[key] = {};
-                        extractNestedFields(value, validatedObj[key], targetObj[key]);
-                    } else {
-                        // If validation created a new structure, use it
-                        targetObj[key] = validatedObj ? validatedObj[key] : value;
-                    }
-                } else {
-                    // Primitive value or array - use validated version if available
-                    targetObj[key] = validatedObj && validatedObj.hasOwnProperty(key) ? validatedObj[key] : value;
+        try {
+            console.log('🚀 Initializing validation system...');
+            
+            // Start server
+            this.progress.start('Starting FoundryVTT server...');
+            await this.serverManager.startServer();
+            this.progress.stop(true, 'FoundryVTT server started');
+
+            // Initialize browser first for Puppeteer-based world discovery
+            this.progress.start('Initializing browser...');
+            await this.serverManager.initializeBrowser();
+            this.progress.stop(true, 'Browser initialized');
+
+            // Get available worlds if not specified (now uses Puppeteer)
+            if (!worldId) {
+                this.progress.start('Discovering available worlds...');
+                const worlds = await this.serverManager.getAvailableWorlds();
+                this.progress.stop(true, `Found ${worlds.length} worlds`);
+                
+                if (worlds.length === 0) {
+                    throw new Error('No worlds available. Please create a world first.');
+                }
+                worldId = worlds[0];
+                if (this.verbose) {
+                    console.log(`   Using first available world: ${worldId}`);
+                }
+            }
+
+            // Activate world
+            this.progress.start(`Activating world: ${worldId}...`);
+            await this.serverManager.activateWorld(worldId);
+            this.selectedWorld = worldId;
+            this.progress.stop(true, `World activated: ${worldId}`);
+
+            // Create and initialize validator
+            this.progress.start('Initializing validator...');
+            this.validator = new FoundryPuppeteerValidator(this.serverManager);
+            await this.validator.initialize();
+            this.progress.stop(true, 'Validator initialized');
+
+            // Get system info
+            const status = await this.serverManager.getServerStatus();
+            this.selectedSystem = status.system;
+            
+            console.log(`📋 Validation system ready!`);
+            console.log(`   System: ${this.selectedSystem}`);
+            console.log(`   World: ${this.selectedWorld}`);
+            
+            this.initialized = true;
+
+        } catch (error) {
+            this.progress.stop(false, 'Initialization failed');
+            throw error;
+        }
+    }
+
+    /**
+     * Ensure the system is initialized
+     * @private
+     */
+    async _ensureInitialized() {
+        if (!this.initialized) {
+            await this.initialize();
+        }
+    }
+
+    /**
+     * Validate a document
+     * @param {string} type - Document type (e.g., 'weapon', 'npc')
+     * @param {Object} data - Document data to validate
+     * @returns {Promise<Object>} Validation result
+     */
+    async validateDocument(type, data) {
+        await this._ensureInitialized();
+
+        // Determine document type (Item vs Actor)
+        const availableTypes = await this.validator.getAvailableTypes();
+        
+        let documentType = null;
+        if (availableTypes.types.Item[type]) {
+            documentType = 'Item';
+        } else if (availableTypes.types.Actor[type]) {
+            documentType = 'Actor';
+        } else {
+            // Check other document types
+            for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
+                if (subtypes[type]) {
+                    documentType = docType;
+                    break;
                 }
             }
         }
 
-        extractNestedFields(originalUpdate, validatedDocument, extractedUpdate);
-        return extractedUpdate;
+        if (!documentType) {
+            throw new ValidationError(
+                `Unknown type: ${type}. Use --list-types to see available types.`,
+                'type',
+                'UNKNOWN_TYPE'
+            );
+        }
+
+        // Ensure the data has the correct type field
+        if (!data.type) {
+            data.type = type;
+        }
+
+        return await this.validator.validateDocument(documentType, data);
+    }
+
+    /**
+     * Get schema for a document type
+     * @param {string} type - Document type
+     * @returns {Promise<Object>} Schema information
+     */
+    async getSchema(type) {
+        await this._ensureInitialized();
+
+        // Determine document type
+        const availableTypes = await this.validator.getAvailableTypes();
+        
+        let documentType = null;
+        if (availableTypes.types.Item[type]) {
+            documentType = 'Item';
+        } else if (availableTypes.types.Actor[type]) {
+            documentType = 'Actor';
+        } else {
+            for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
+                if (subtypes[type]) {
+                    documentType = docType;
+                    break;
+                }
+            }
+        }
+
+        if (!documentType) {
+            throw new ValidationError(
+                `Unknown type: ${type}. Use --list-types to see available types.`,
+                'type',
+                'UNKNOWN_TYPE'
+            );
+        }
+
+        return await this.validator.getSchema(documentType, type);
+    }
+
+    /**
+     * List available types
+     * @returns {Promise<Object>} Available types
+     */
+    async listTypes() {
+        await this._ensureInitialized();
+        return await this.validator.getAvailableTypes();
+    }
+
+    /**
+     * List available worlds using Puppeteer-based discovery
+     * @returns {Promise<Array<string>>} Available world IDs
+     */
+    async listWorlds() {
+        // Start server and initialize browser if not already done
+        if (!this.serverManager.isServerRunning()) {
+            await this.serverManager.startServer();
+        }
+        if (!this.serverManager.browser) {
+            await this.serverManager.initializeBrowser();
+        }
+        
+        return await this.serverManager.getAvailableWorlds();
+    }
+
+    /**
+     * Cleanup resources
+     */
+    async cleanup() {
+        if (this.serverManager) {
+            await this.serverManager.cleanup();
+        }
+        this.initialized = false;
+        this.validator = null;
+    }
+}
+
+/**
+ * CLI Validator class
+ */
+class FoundryValidator {
+    constructor() {
+        this.manager = null;
+        this.credentialManager = new CredentialManager();
     }
 
     /**
@@ -79,16 +288,12 @@ class FoundryValidator {
             system: {
                 type: 'string',
                 short: 's',
-                description: 'System name (e.g., dnd5e, pf2e)'
+                description: 'System name (not used with Puppeteer validation)'
             },
             type: {
                 type: 'string',
                 short: 't',
                 description: 'Object type (e.g., actor, item, weapon, spell)'
-            },
-            'list-systems': {
-                type: 'boolean',
-                description: 'List available systems'
             },
             'list-worlds': {
                 type: 'boolean',
@@ -96,47 +301,31 @@ class FoundryValidator {
             },
             'list-types': {
                 type: 'boolean',
-                description: 'List available object types for a system (requires -s)'
+                description: 'List available object types'
+            },
+            schema: {
+                type: 'boolean',
+                description: 'Extract and display the expected schema'
             },
             world: {
                 type: 'string',
                 short: 'w',
-                description: 'Target world for insertion (use with --insert)'
+                description: 'World ID to use for validation'
             },
-            insert: {
+            file: {
+                type: 'string',
+                short: 'f',
+                description: 'JSON file containing object data'
+            },
+            create: {
                 type: 'boolean',
-                short: 'i',
-                description: 'Insert validated object into specified world'
+                short: 'c',
+                description: 'Validate for document creation'
             },
             update: {
                 type: 'boolean',
                 short: 'u',
-                description: 'Update existing object in specified world'
-            },
-            search: {
-                type: 'boolean',
-                short: 'r',
-                description: 'Search and retrieve objects from a world'
-            },
-            name: {
-                type: 'string',
-                description: 'Search by name pattern (supports wildcards * and ?)'
-            },
-            id: {
-                type: 'string',
-                description: 'Search by ID pattern (supports wildcards * and ?)'
-            },
-            limit: {
-                type: 'string',
-                description: 'Limit number of results returned'
-            },
-            details: {
-                type: 'boolean',
-                description: 'Show detailed information about found documents'
-            },
-            json: {
-                type: 'boolean',
-                description: 'Show full JSON data for found documents'
+                description: 'Validate for document update'
             },
             verbose: {
                 type: 'boolean',
@@ -148,129 +337,76 @@ class FoundryValidator {
                 short: 'h',
                 description: 'Show help message'
             },
-            'no-image': {
+            'set-admin-password': {
                 type: 'boolean',
-                description: 'Bypass mandatory image requirement for objects'
+                description: 'Set or update FoundryVTT administrator password'
             },
-            'list-images': {
+            'set-world-password': {
                 type: 'boolean',
-                description: 'List available images from core and user data'
+                description: 'Set or update world password'
             },
-            schema: {
+            'credential-status': {
                 type: 'boolean',
-                description: 'Extract and display the expected structure (schema) for an object type'
+                description: 'Check credential storage status'
+            },
+            'clear-credentials': {
+                type: 'boolean',
+                description: 'Clear all stored credentials'
             }
         };
 
-        try {
-            const { values, positionals } = parseArgs({
-                options,
-                allowPositionals: true
-            });
+        const { values, positionals } = parseArgs({
+            options,
+            allowPositionals: true,
+            strict: false
+        });
 
-            return {
-                system: values.system,
-                type: values.type,
-                listSystems: values['list-systems'],
-                listWorlds: values['list-worlds'],
-                listTypes: values['list-types'],
-                world: values.world,
-                insert: values.insert,
-                update: values.update,
-                search: values.search,
-                name: values.name,
-                id: values.id,
-                limit: values.limit ? parseInt(values.limit) : undefined,
-                details: values.details,
-                json: values.json,
-                verbose: values.verbose,
-                help: values.help,
-                noImage: values['no-image'],
-                listImages: values['list-images'],
-                schema: values.schema,
-                jsonString: positionals[0]
-            };
-        } catch (error) {
-            console.error(`Error parsing arguments: ${error.message}`);
-            process.exit(1);
-        }
+        return { ...values, positionals };
     }
 
     /**
-     * Show help message
+     * Display help message
      */
     showHelp() {
         const helpText = `
-FoundryVTT Object Manager
+FoundryVTT Object Validator - Puppeteer Edition
 
 USAGE:
-  foundry-manager.mjs [OPTIONS] [JSON_STRING]
+  foundry-manager.mjs [options] [json_string]
 
 OPTIONS:
-  # Core Operations
-  -i, --insert            Insert validated object into specified world
-  -u, --update            Update existing object in specified world  
-  -r, --search            Search and retrieve objects from a world
-  --schema                Extract and display the expected structure (schema)
+  -t, --type <type>               Object type (e.g., weapon, npc, spell)
+  -w, --world <id>                World ID to use (defaults to first available)
+  -f, --file <path>               Read JSON from file
+  -c, --create                    Validate for creation (default)
+  -u, --update                    Validate for update
+  -v, --verbose                   Enable verbose output
+  -h, --help                      Show this help message
 
-  # Required Parameters
-  -s, --system <name>     System name (e.g., dnd5e, pf2e) - Required for validation-only and schema extraction
-  -t, --type <type>       Object type (e.g., character, weapon, spell, npc)
-  -w, --world <name>      Target world (auto-detects system when used with -i, -u, -r, --schema)
+  --list-worlds                   List available worlds
+  --list-types                    List available object types
+  --schema                        Extract and display expected schema
 
-  # Discovery Operations  
-  --list-systems          List available systems
-  --list-worlds           List available worlds
-  --list-types            List available object types for a system (requires -s)
-  --list-images           List available images from core and user data
-
-  # Search Filters
-  --name <pattern>        Search by name pattern (supports wildcards * and ?)
-  --id <pattern>          Search by ID pattern (supports wildcards * and ?)
-  --limit <number>        Limit number of results returned
-
-  # Output Options
-  --details               Show detailed information about found documents
-  --json                  Show full JSON data for search results (not for schema extraction)
-  --no-image              Bypass mandatory image requirement for objects
-  -v, --verbose           Enable verbose output
-  -h, --help              Show this help message
+  --set-admin-password            Set administrator password
+  --set-world-password            Set world password
+  --credential-status             Check credential status
+  --clear-credentials             Clear stored credentials
 
 EXAMPLES:
-  # Complete Workflow: Discovery → Schema → Create
-  foundry-manager.mjs --list-systems                              # 1. Find available systems
-  foundry-manager.mjs --list-types -s dnd5e                       # 2. Find object types for system
-  foundry-manager.mjs -s dnd5e -t character --schema              # 3. Get expected structure
-  foundry-manager.mjs -w my-world -t character -i '{"name":"Hero","type":"character"}'  # 4. Create object
+  # Validate weapon from command line
+  foundry-manager.mjs -t weapon '{"name": "Longsword", "type": "weapon"}'
 
-  # Discovery Operations
-  foundry-manager.mjs --list-systems                              # List available systems
-  foundry-manager.mjs --list-worlds                               # List available worlds
-  foundry-manager.mjs --list-types -s dnd5e                       # List object types for D&D 5e
-  foundry-manager.mjs --list-images                               # List available images
+  # Validate from file
+  foundry-manager.mjs -t npc -f my-npc.json
 
-  # Schema Extraction
-  foundry-manager.mjs -s dnd5e -t character --schema              # Extract character schema (with system)
-  foundry-manager.mjs -w my-world -t weapon --schema              # Extract weapon schema (auto-detect system)
+  # Get schema for a type
+  foundry-manager.mjs -t weapon --schema
 
-  # Object Creation & Validation
-  foundry-manager.mjs -s dnd5e -t character '{"name":"Test","type":"character"}'  # Validate only
-  foundry-manager.mjs -w my-world -t character -i '{"name":"Hero","type":"character"}'  # Insert into world
-  foundry-manager.mjs -w my-world -t character -i --no-image '{"name":"Hero","type":"character"}'  # Skip image validation
+  # List available types
+  foundry-manager.mjs --list-types
 
-  # Search Operations
-  foundry-manager.mjs -w my-world -t character -r                 # Search all characters
-  foundry-manager.mjs -w my-world -t character -r --name "Hero*"  # Search by name pattern
-  foundry-manager.mjs -w my-world -t item -r --details --limit 5  # Search with details, limit results
-  foundry-manager.mjs -w my-world -t item -r --json               # Search and show full JSON
-
-  # Update Operations
-  foundry-manager.mjs -w my-world -t character -u --id "abc123" '{"name":"New Name"}'     # Update by ID
-  foundry-manager.mjs -w my-world -t character -u --name "Hero" '{"hp":{"value":50}}'     # Update by name
-  foundry-manager.mjs -w my-world -t item -u --id "xyz789" '{"name":"Magic Sword","system":{"price":100}}'  # Update multiple fields
-
-  # Advanced Usage
-  foundry-manager.mjs -s dnd5e -t item < my-item.json             # Validate from file
+  # Use specific world
+  foundry-manager.mjs -w myworld -t actor actor.json
 
 EXIT CODES:
   0    Validation successful
@@ -280,983 +416,181 @@ EXIT CODES:
     }
 
     /**
-     * Extract and display the schema for a given object type
+     * Handle credential management commands
      */
-    async extractSchema(args) {
-        let { system, type, world, verbose } = args;
-
-        // Auto-detect system from world if not provided
-        if (!system && world) {
-            try {
-                const worldInfo = await this.worldManager.getWorldInfo(world);
-                system = worldInfo.system;
-                if (verbose) {
-                    console.log(`Auto-detected system: ${system} from world: ${world}`);
+    async handleCredentialCommand(args) {
+        if (args['set-admin-password']) {
+            await this.credentialManager.setAdminPassword();
+            return true;
+        }
+        
+        if (args['set-world-password']) {
+            await this.credentialManager.setWorldPassword();
+            return true;
+        }
+        
+        if (args['credential-status']) {
+            if (typeof this.credentialManager === 'object' && this.credentialManager !== null) {
+                if (typeof this.credentialManager.showStatus === 'function') {
+                    this.credentialManager.showStatus();
+                } else {
+                    console.error('Diagnostic: this.credentialManager.showStatus is not a function.');
+                    console.error('Type of this.credentialManager:', typeof this.credentialManager);
+                    console.error('Keys on this.credentialManager:', Object.keys(this.credentialManager));
+                    console.error('Prototype of this.credentialManager:', Object.getPrototypeOf(this.credentialManager));
                 }
-            } catch (error) {
-                console.error(`Error: Could not auto-detect system from world '${world}': ${error.message}`);
-                console.error('Use -l --listWorlds to list available worlds');
-                process.exit(1);
+            } else {
+                console.error('Diagnostic: this.credentialManager is not an object or is null.');
+                console.error('Value of this.credentialManager:', this.credentialManager);
             }
-        }
-
-        // Validate required arguments for schema extraction
-        if (!system) {
-            console.error('Error: System (-s) is required for schema extraction when no world (-w) is specified');
-            console.error('Use -l to list available systems, or specify a world with -w to auto-detect system');
-            process.exit(1);
-        }
-
-        if (!type) {
-            console.error('Error: Object type (-t) is required for schema extraction');
-            console.error(`Use -s ${system} -l to list available object types`);
-            process.exit(1);
-        }
-
-        if (verbose) {
-            console.log(`Extracting schema for ${type} in system: ${system}`);
-        }
-
-        try {
-            // Validate system and object type combination
-            const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-            if (!validation.valid) {
-                console.error(`Error: ${validation.error}`);
-                process.exit(1);
-            }
-
-            const documentType = validation.documentType;
-            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
-
-            if (verbose) {
-                console.log(`Loading system: ${system}`);
-                console.log(`Document type: ${documentType}`);
-            }
-
-            // Create a minimal document to extract the actual structure
-            const dummyData = {
-                name: "SchemaExtraction",
-                type: type
-            };
-
-            // Use FoundryVTT's actual document creation to get the real structure
-            const documentData = await this.createFoundryDocument(dummyData, documentType, {
-                systemId: system,
-                systemVersion: systemInfo.version,
-                userId: 'VALIDATEONLYUSER', // Same as validation-only mode
-                noImage: true
-            });
-
-            // Display the actual structure that FoundryVTT creates
-            console.log(`Expected structure for ${type} (${documentType}) in ${system}:`);
-            console.log('='.repeat(60));
-            console.log('This is the actual structure created by FoundryVTT with all validation and defaults applied:');
-            console.log('');
-            console.log(JSON.stringify(documentData, null, 2));
-
-        } catch (error) {
-            // Enhanced error handling for schema extraction
-            await this.handleEnhancedError(error, {
-                operation: 'schema extraction',
-                system: system,
-                type: type,
-                world: world,
-                verbose: verbose
-            });
-            process.exit(1);
-        }
-    }
-
-
-
-    /**
-     * Enhanced error handling that provides actionable guidance
-     */
-    async handleEnhancedError(error, context) {
-        const { operation, system, type, world, verbose } = context;
-        
-        console.error(`${operation} error: ${error.message}`);
-        
-        if (verbose) {
-            console.error(error.stack);
+            return true;
         }
         
-        // Check if this is an invalid object type error
-        if (error.message.includes('not found in system') || error.message.includes('is not a valid type for')) {
-            console.error('\n📋 Available object types for this system:');
-            
-            // Get and display the actual available types
-            try {
-                const systemInfo = await this.systemDiscovery.getSystemInfo(system);
-                const objectTypes = await this.systemDiscovery.getSystemObjectTypes(system);
-                
-                for (const [docType, config] of Object.entries(systemInfo.documentTypes)) {
-                    console.error(`\n${docType} Document Types:`);
-                    for (const subtype of config.subtypes) {
-                        console.error(`  • ${subtype}`);
-                    }
-                }
-            } catch (listError) {
-                console.error(`Run: ./foundry-manager.mjs --list-types -s ${system}`);
-            }
-            console.error('');
-            return;
+        if (args['clear-credentials']) {
+            await this.credentialManager.clearCredentials();
+            return true;
         }
         
-        // Check if this is a validation error (FoundryVTT document validation)
-        if (error.message.includes('validation errors') || error.message.includes('may not be undefined')) {
-            console.error('\n📋 Expected structure for this object type:');
-            console.error(`Run: ./foundry-manager.mjs -s ${system} -t ${type} --schema`);
-            console.error('');
-            console.error('💡 This will show you the complete expected JSON structure with all required fields.');
-            
-            // If we have world context, show that the schema is specific to this system
-            if (world) {
-                console.error(`   (Schema for ${type} in ${system} system used by world '${world}')`);
-            }
-            console.error('');
-            return;
-        }
-        
-        // For other errors, just show the basic error
-        console.error('');
+        return false;
     }
 
     /**
-     * Main execution function
+     * Main run method
      */
     async run() {
-        if (process.argv.length === 2) {
-            this.showHelp();
-            process.exit(0);
-        }
-
         const args = this.parseArguments();
 
+        // Handle help
         if (args.help) {
             this.showHelp();
             process.exit(0);
         }
 
-        try {
-            // Initialize the environment
-            if (args.verbose) {
-                console.log('Initializing FoundryVTT environment...');
-            }
-            await this.foundryEnv.initialize();
+        // Handle credential commands
+        if (await this.handleCredentialCommand(args)) {
+            process.exit(0);
+        }
 
-            // Handle listing operations
-            if (args.listSystems || args.listWorlds || args.listTypes) {
-                await this.handleListOperation(args);
+        try {
+            // Create manager
+            this.manager = new FoundryManager({ 
+                verbose: args.verbose,
+                server: {
+                    world: args.world
+                }
+            });
+
+            // Handle list worlds
+            if (args['list-worlds']) {
+                const worlds = await this.manager.listWorlds();
+                console.log('\n📁 Available Worlds:');
+                if (worlds.length === 0) {
+                    console.log('   No worlds found');
+                } else {
+                    worlds.forEach(world => console.log(`   - ${world}`));
+                }
+                await this.manager.cleanup();
                 process.exit(0);
             }
 
-            // Handle image listing
-            if (args.listImages) {
-                await this.listAvailableImages(args);
+            // Handle list types
+            if (args['list-types']) {
+                const types = await this.manager.listTypes();
+                console.log(`\n📋 Available Types for ${types.systemTitle}:`);
+                
+                for (const [docType, subtypes] of Object.entries(types.types)) {
+                    const subtypeList = Object.keys(subtypes);
+                    if (subtypeList.length > 0) {
+                        console.log(`\n${docType}:`);
+                        subtypeList.forEach(type => {
+                            console.log(`   - ${type}: ${subtypes[type]}`);
+                        });
+                    }
+                }
+                await this.manager.cleanup();
                 process.exit(0);
             }
 
             // Handle schema extraction
             if (args.schema) {
-                await this.extractSchema(args);
+                if (!args.type) {
+                    console.error('Error: Type (-t) is required for schema extraction');
+                    process.exit(1);
+                }
+
+                const schema = await this.manager.getSchema(args.type);
+                console.log(`\n📋 Schema for ${args.type}:`);
+                console.log('='.repeat(60));
+                console.log(JSON.stringify(schema, null, 2));
+                await this.manager.cleanup();
                 process.exit(0);
             }
 
-            // Auto-detect system from world if world is provided but system is not
-            if (!args.system && args.world) {
-                try {
-                    const worldInfo = await this.worldManager.getWorldInfo(args.world);
-                    args.system = worldInfo.system;
-                    if (args.verbose) {
-                        console.log(`Auto-detected system: ${args.system} from world: ${args.world}`);
-                    }
-                } catch (error) {
-                    console.error(`Error: Could not auto-detect system from world '${args.world}': ${error.message}`);
-                    console.error('Use -l --listWorlds to list available worlds');
-                    process.exit(1);
-                }
-            }
-
-            // Validate required arguments for validation
-            if (!args.system) {
-                console.error('Error: System (-s) is required for validation when no world (-w) is specified');
-                console.error('Use -l to list available systems, or specify a world with -w to auto-detect system');
-                process.exit(1);
-            }
-
+            // Validate document
             if (!args.type) {
-                console.error('Error: Object type (-t) is required for validation');
-                console.error(`Use -s ${args.system} -l to list available object types`);
+                console.error('Error: Type (-t) is required for validation');
+                console.error('Use --list-types to see available types');
                 process.exit(1);
             }
 
-            if (!args.search && !args.update && !args.jsonString) {
-                console.error('Error: JSON string is required for validation');
-                console.error('Provide JSON as command line argument or via stdin');
-                process.exit(1);
-            }
-
-            // Handle search operations
-            if (args.search) {
-                await this.performSearch(args);
-            }
-            // Handle update operations
-            else if (args.update) {
-                await this.performUpdate(args);
-            }
-            // Handle world insertion validation
-            else if (args.insert) {
-                await this.performValidationAndInsertion(args);
-            } 
-            // Perform regular validation
-            else {
-                await this.performValidation(args);
-            }
-
-        } catch (error) {
-            // Always try enhanced error handling for operations with type parameter
-            if (args.type && (args.insert || args.update || args.search)) {
-                // If we have a world, try to auto-detect system for error handling
-                let systemForError = args.system;
-                if (!systemForError && args.world) {
-                    try {
-                        const worldInfo = await this.worldManager.getWorldInfo(args.world);
-                        systemForError = worldInfo.system;
-                    } catch (worldError) {
-                        // Fall through to basic error handling
-                    }
-                }
-                
-                if (systemForError) {
-                    await this.handleEnhancedError(error, {
-                        operation: 'operation',
-                        system: systemForError,
-                        type: args.type,
-                        world: args.world,
-                        verbose: args.verbose
-                    });
+            // Get JSON data
+            let jsonData;
+            if (args.file) {
+                if (!existsSync(args.file)) {
+                    console.error(`Error: File not found: ${args.file}`);
                     process.exit(1);
                 }
-            }
-            
-            // Fallback to basic error handling
-            console.error(`Fatal error: ${error.message}`);
-            if (args.verbose) {
-                console.error(error.stack);
-            }
-            process.exit(1);
-        }
-    }
-
-    /**
-     * Handle list operations
-     */
-    async handleListOperation(args) {
-        if (args.listWorlds) {
-            // List all available worlds
-            const output = await this.worldManager.listWorlds();
-            console.log(output);
-        } else if (args.listSystems) {
-            // List all available systems
-            const output = await this.systemDiscovery.listSystems();
-            console.log(output);
-        } else if (args.listTypes) {
-            // List object types for specific system
-            if (!args.system) {
-                console.error('Error: System (-s) is required when using --list-types');
-                console.error('Use --list-systems to see available systems');
-                process.exit(1);
-            }
-            const output = await this.systemDiscovery.listSystemObjectTypes(args.system);
-            console.log(output);
-        }
-    }
-
-    /**
-     * Perform search operations
-     */
-    async performSearch(args) {
-        let { system, type, world, name, id, limit, details, json, verbose } = args;
-
-        // Validate required arguments for search
-        if (!world) {
-            console.error('Error: World (-w) is required for search');
-            console.error('Use -l --listWorlds to list available worlds');
-            process.exit(1);
-        }
-
-        // Auto-detect system from world if not provided
-        if (!system && world) {
-            try {
-                const worldInfo = await this.worldManager.getWorldInfo(world);
-                system = worldInfo.system;
-                if (verbose) {
-                    console.log(`Auto-detected system: ${system} from world: ${world}`);
-                }
-            } catch (error) {
-                console.error(`Error: Could not auto-detect system from world '${world}': ${error.message}`);
-                console.error('Use -l --listWorlds to list available worlds');
-                process.exit(1);
-            }
-        }
-
-        if (verbose) {
-            console.log(`Searching for ${type} objects in world: ${world}`);
-        }
-
-        // Validate system and object type combination
-        const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-        if (!validation.valid) {
-            console.error(`Error: ${validation.error}`);
-            process.exit(1);
-        }
-
-        // Validate world exists
-        const worldValidation = await this.worldManager.validateWorldExists(world);
-        if (!worldValidation.valid) {
-            console.error(`Error: ${worldValidation.error}`);
-            process.exit(1);
-        }
-
-        const documentType = validation.documentType;
-
-        try {
-            if (verbose) {
-                console.log(`Document type: ${documentType}`);
-                console.log(`Search patterns: name="${name || 'any'}", id="${id || 'any'}"`);
-                if (limit) console.log(`Limit: ${limit} results`);
-            }
-
-            // Build search options
-            const searchOptions = {};
-            if (name) searchOptions.name = name;
-            if (id) searchOptions.id = id;
-            if (type && validation && validation.subtypes && validation.subtypes.includes(type)) {
-                searchOptions.type = type;
-            }
-            if (limit) searchOptions.limit = limit;
-
-            // Perform search
-            const searchResult = await this.worldManager.searchDocuments(world, documentType, searchOptions);
-
-            // Format and display results
-            const formatOptions = {
-                showDetails: details || false,
-                showJSON: json || false
-            };
-
-            const output = this.worldManager.formatDocumentList(searchResult, formatOptions);
-            console.log(output);
-
-            if (searchResult.success && searchResult.totalFound > 0) {
-                process.exit(0);
-            } else if (searchResult.success && searchResult.totalFound === 0) {
-                console.log('\nNo matching documents found.');
-                process.exit(0);
+                const fileContent = readFileSync(args.file, 'utf8');
+                jsonData = JSON.parse(fileContent);
+            } else if (args.positionals.length > 0) {
+                jsonData = JSON.parse(args.positionals[0]);
             } else {
-                console.error('\nSearch failed.');
-                process.exit(1);
-            }
-
-        } catch (error) {
-            console.error(`Search error: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
-            }
-            process.exit(1);
-        }
-    }
-
-    /**
-     * Perform JSON validation and world insertion
-     */
-    async performValidationAndInsertion(args) {
-        const { system, type, world, jsonString, verbose, noImage } = args;
-
-        // Validate required arguments for insertion
-        if (!world) {
-            console.error('Error: World (-w) is required for insertion');
-            console.error('Use -l -w to list available worlds');
-            process.exit(1);
-        }
-
-        if (verbose) {
-            console.log(`Validating ${type} object for insertion into world: ${world}`);
-        }
-
-        let validation;
-        try {
-            // Validate system and object type combination
-            validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-            if (!validation.valid) {
-                // Create error object for enhanced error handling
-                const error = new Error(validation.error);
-                await this.handleEnhancedError(error, {
-                    operation: 'validation',
-                    system: system,
-                    type: type,
-                    world: world,
-                    verbose: verbose
-                });
-                process.exit(1);
-            }
-        } catch (error) {
-            // Enhanced error handling for invalid object type
-            await this.handleEnhancedError(error, {
-                operation: 'validation',
-                system: system,
-                type: type,
-                world: world,
-                verbose: verbose
-            });
-            process.exit(1);
-        }
-
-        // Validate world exists
-        const worldValidation = await this.worldManager.validateWorldExists(world);
-        if (!worldValidation.valid) {
-            console.error(`Error: ${worldValidation.error}`);
-            process.exit(1);
-        }
-
-        const documentType = validation.documentType;
-
-        try {
-            // Perform normal validation first
-            if (verbose) {
-                console.log(`Loading system: ${system}`);
-                console.log(`Document type: ${documentType}`);
-                console.log(`Target world: ${world}`);
-            }
-
-            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
-            
-            if (verbose) {
-                console.log('Loading FoundryVTT document class...');
-            }
-
-            // Get the actual GM user ID from the world
-            const gmUserId = await this.worldManager.getGMUserId(world);
-            
-            // Use FoundryVTT's actual document creation process
-            const documentData = await this.createFoundryDocument(jsonString, documentType, {
-                systemId: system,
-                systemVersion: systemInfo.version,
-                userId: gmUserId,
-                noImage: noImage
-            });
-
-            if (verbose) {
-                console.log('✓ Document created with FoundryVTT validation');
-                console.log('Inserting into world...');
-            }
-
-            // Insert into world
-            const insertResult = await this.worldManager.insertDocument(
-                world, 
-                documentType, 
-                documentData,
-                {
-                    systemId: system,
-                    systemVersion: systemInfo.version,
-                    userId: 'CLI_USER'
+                // Read from stdin
+                const chunks = [];
+                for await (const chunk of process.stdin) {
+                    chunks.push(chunk);
                 }
-            );
-
-            if (insertResult.success) {
-                console.log('✓ Successfully inserted into world');
-                console.log(`Document ID: ${insertResult.documentId}`);
-                console.log(`World: ${insertResult.worldId}`);
-                console.log(`Type: ${insertResult.documentType}`);
-                
-                if (verbose) {
-                    console.log('\nInserted JSON:');
-                    console.log(JSON.stringify(insertResult.insertedData, null, 2));
-                }
-                
-                process.exit(0);
-            } else {
-                console.error('✗ Insertion failed');
-                console.error(`Error: ${insertResult.error}`);
-                process.exit(1);
+                const input = Buffer.concat(chunks).toString();
+                jsonData = JSON.parse(input);
             }
 
-        } catch (error) {
-            // Enhanced error handling with auto-detected system
-            await this.handleEnhancedError(error, {
-                operation: 'validation/insertion',
-                system: system,
-                type: type,
-                world: world,
-                verbose: verbose
-            });
-            process.exit(1);
-        }
-    }
+            // Validate
+            console.log(`\n🔍 Validating ${args.type}...`);
+            const result = await this.manager.validateDocument(args.type, jsonData);
 
-    /**
-     * Perform document update operation
-     */
-    async performUpdate(args) {
-        const { system, type, world, id, name, jsonString, verbose, noImage } = args;
-
-        // Validate required arguments for update
-        if (!world) {
-            console.error('Error: World (-w) is required for update');
-            console.error('Use -l --listWorlds to list available worlds');
-            process.exit(1);
-        }
-
-        if (!id && !name) {
-            console.error('Error: Document ID (--id) or name pattern (--name) is required for update');
-            console.error('Specify which document to update');
-            process.exit(1);
-        }
-
-        if (!jsonString) {
-            console.error('Error: JSON update data is required');
-            console.error('Provide JSON as command line argument or via stdin');
-            process.exit(1);
-        }
-
-        if (verbose) {
-            console.log(`Updating ${type} object in world: ${world}`);
-        }
-
-        // Validate system and object type combination
-        const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-        if (!validation.valid) {
-            console.error(`Error: ${validation.error}`);
-            process.exit(1);
-        }
-
-        // Validate world exists
-        const worldValidation = await this.worldManager.validateWorldExists(world);
-        if (!worldValidation.valid) {
-            console.error(`Error: ${worldValidation.error}`);
-            process.exit(1);
-        }
-
-        const documentType = validation.documentType;
-
-        try {
-            let targetDocumentId = id;
-
-            // If searching by name, find the document first
-            if (!targetDocumentId && name) {
-                const searchResult = await this.worldManager.searchDocuments(world, documentType, { name });
-                
-                if (!searchResult.success) {
-                    console.error(`Search error: ${searchResult.error}`);
-                    process.exit(1);
-                }
-
-                if (searchResult.documents.length === 0) {
-                    console.error(`No documents found matching name pattern: ${name}`);
-                    process.exit(1);
-                }
-
-                if (searchResult.documents.length > 1) {
-                    console.error(`Multiple documents found matching name pattern: ${name}`);
-                    console.error('Please use --id to specify exact document, or refine your search pattern.');
-                    console.error('\nMatching documents:');
-                    searchResult.documents.forEach(doc => {
-                        console.error(`  - ${doc.name} (ID: ${doc._id})`);
-                    });
-                    process.exit(1);
-                }
-
-                targetDocumentId = searchResult.documents[0]._id;
-                if (verbose) {
-                    console.log(`Found document: ${searchResult.documents[0].name} (ID: ${targetDocumentId})`);
+            if (result.success) {
+                console.log(`✅ Validation successful!`);
+                if (args.verbose) {
+                    console.log('\nValidated document:');
+                    console.log(JSON.stringify(result.data, null, 2));
                 }
             }
 
-            // Parse the update JSON
-            let updateData;
-            try {
-                updateData = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
-            } catch (error) {
-                console.error(`Invalid JSON: ${error.message}`);
-                process.exit(1);
-            }
-
-            if (verbose) {
-                console.log(`Loading system: ${system}`);
-                console.log(`Document type: ${documentType}`);
-                console.log(`Document ID: ${targetDocumentId}`);
-            }
-
-            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
-
-            // First, retrieve the existing document
-            const getResult = await this.worldManager.getDocument(world, documentType, targetDocumentId);
-            
-            if (!getResult.success) {
-                console.error(`Error retrieving document: ${getResult.error}`);
-                process.exit(1);
-            }
-
-            const existingDocument = getResult.document;
-            
-            if (verbose) {
-                console.log('✓ Document retrieved successfully');
-                console.log(`Current name: ${existingDocument.name}`);
-            }
-
-            // Merge the update data with existing document
-            const mergedData = this.worldManager.mergeDocumentData(existingDocument, updateData);
-
-            // Validate the merged document using FoundryVTT's validation
-            const gmUserId = await this.worldManager.getGMUserId(world);
-            
-            // Use FoundryVTT's actual document creation process for validation
-            const validatedData = await this.createFoundryDocument(mergedData, documentType, {
-                systemId: system,
-                systemVersion: systemInfo.version,
-                userId: gmUserId,
-                noImage: noImage
-            });
-
-            if (verbose) {
-                console.log('✓ Updated document validated with FoundryVTT');
-                console.log('Extracting validated update fields...');
-            }
-
-            // Extract only the fields that were requested to be updated, but with validated values
-            const validatedUpdateData = FoundryValidator.extractChangedFields(updateData, validatedData);
-
-            if (verbose) {
-                console.log('✓ Validated update data extracted');
-                console.log('Performing update...');
-            }
-
-            // Perform the update with validated data
-            const updateResult = await this.worldManager.updateDocument(
-                world, 
-                documentType, 
-                targetDocumentId, 
-                validatedUpdateData,  // Use validated update data instead of raw updateData
-                {
-                    systemId: system,
-                    systemVersion: systemInfo.version,
-                    userId: gmUserId
-                }
-            );
-
-            if (updateResult.success) {
-                console.log('✓ Successfully updated document');
-                console.log(`Document ID: ${updateResult.documentId}`);
-                console.log(`World: ${updateResult.worldId}`);
-                console.log(`Type: ${updateResult.documentType}`);
-                
-                if (verbose) {
-                    console.log('\nUpdated document:');
-                    console.log(JSON.stringify(updateResult.updatedData, null, 2));
-                }
-                
-                process.exit(0);
-            } else {
-                console.error('✗ Update failed');
-                console.error(`Error: ${updateResult.error}`);
-                process.exit(1);
-            }
-
-        } catch (error) {
-            // Enhanced error handling with auto-detected system
-            await this.handleEnhancedError(error, {
-                operation: 'update',
-                system: system,
-                type: type,
-                world: world,
-                verbose: verbose
-            });
-            process.exit(1);
-        }
-    }
-
-    /**
-     * Perform JSON validation
-     */
-    async performValidation(args) {
-        const { system, type, jsonString, verbose, noImage } = args;
-
-        if (verbose) {
-            console.log(`Validating ${type} object for system: ${system}`);
-        }
-
-        // Validate system and object type combination
-        const validation = await this.systemDiscovery.validateSystemObjectType(system, type);
-        if (!validation.valid) {
-            console.error(`Error: ${validation.error}`);
-            process.exit(1);
-        }
-
-        const documentType = validation.documentType;
-
-        try {
-            if (verbose) {
-                console.log(`Loading system: ${system}`);
-                console.log(`Document type: ${documentType}`);
-            }
-
-            const systemInfo = await this.systemDiscovery.getSystemInfo(system);
-            
-            if (verbose) {
-                console.log('Creating document with FoundryVTT validation...');
-            }
-
-            // Use FoundryVTT's actual document creation process (validation only, no world context)
-            const documentData = await this.createFoundryDocument(jsonString, documentType, {
-                systemId: system,
-                systemVersion: systemInfo.version,
-                userId: 'VALIDATEONLYUSER',
-                noImage: noImage
-            });
-
-            console.log('✓ Validation successful');
-            
-            if (verbose) {
-                console.log('\nValidated and normalized JSON:');
-            }
-            console.log(JSON.stringify(documentData, null, 2));
-            
+            await this.manager.cleanup();
             process.exit(0);
 
         } catch (error) {
-            console.error(`Validation error: ${error.message}`);
-            if (verbose) {
-                console.error(error.stack);
+            if (error instanceof ValidationError) {
+                console.error(`\n❌ Validation failed:`);
+                console.error(`   → ${error.message}`);
+                if (error.field) {
+                    console.error(`   → Field: ${error.field}`);
+                }
+                console.error(`   → Code: ${error.code}`);
+            } else {
+                console.error(`\n❌ Error: ${error.message}`);
+                if (args.verbose && error.stack) {
+                    console.error('\nStack trace:');
+                    console.error(error.stack);
+                }
+            }
+            
+            if (this.manager) {
+                await this.manager.cleanup();
             }
             process.exit(1);
         }
     }
-
-    /**
-     * Create a document using FoundryVTT's actual document creation process
-     */
-    async createFoundryDocument(jsonString, documentType, options = {}) {
-        try {
-            // Parse the input JSON
-            let inputData;
-            try {
-                inputData = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
-            } catch (error) {
-                throw new Error(`Invalid JSON: ${error.message}`);
-            }
-
-            // Import the actual FoundryVTT document class
-            const documentPath = join(this.foundryEnv.resourcesPath, 'common', 'documents', `${documentType.toLowerCase()}.mjs`);
-            
-            if (!existsSync(documentPath)) {
-                throw new Error(`Document class not found: ${documentType}`);
-            }
-            
-            const DocumentClass = await import(`file://${documentPath}`);
-            const BaseDocument = DocumentClass.default;
-            
-            if (!BaseDocument) {
-                throw new Error(`Invalid document class: ${documentType}`);
-            }
-
-            // Add required fields with proper FoundryVTT structure
-            // Generate userId if not provided
-            const userId = options.userId || FoundryValidator.generateRandomId();
-            
-            const documentData = {
-                ...inputData,
-                _id: inputData._id || FoundryValidator.generateRandomId(),
-                _stats: {
-                    compendiumSource: null,
-                    duplicateSource: null,
-                    coreVersion: options.coreVersion || "12.331",
-                    systemId: options.systemId || "unknown",
-                    systemVersion: options.systemVersion || "1.0.0",
-                    createdTime: Date.now(),
-                    modifiedTime: Date.now(),
-                    lastModifiedBy: userId
-                }
-            };
-
-            // Create document instance using FoundryVTT's constructor
-            // This will handle validation and apply defaults
-            
-            const doc = new BaseDocument(documentData, {});
-            
-            // Get the validated document data
-            const validatedData = doc.toObject();
-            
-            // Custom image validation (unless bypassed with --no-image)
-            if (!options.noImage) {
-                // Check if the document has an img field and if it's valid
-                const defaultImages = ["icons/svg/mystery-man.svg", "icons/svg/item-bag.svg"];
-                if (!validatedData.img || defaultImages.includes(validatedData.img)) {
-                    throw new Error(
-                        `Image is required for ${documentType} objects. ` +
-                        `Provide an 'img' field with a valid image path, or use --no-image to bypass this requirement. ` +
-                        `Use --list-images to see available images.`
-                    );
-                }
-                
-                // Check if the image file actually exists in foundry-data or foundry-app
-                if (!await this.validateImageExists(validatedData.img)) {
-                    throw new Error(
-                        `Image file '${validatedData.img}' does not exist in foundry-data or foundry-app directories. ` +
-                        `Use --list-images to see available images, or use --no-image to bypass this requirement.`
-                    );
-                }
-            }
-            
-            // Return the validated and normalized document data
-            return validatedData;
-            
-        } catch (error) {
-            throw new Error(`Failed to create FoundryVTT document: ${error.message}`);
-        }
-    }
-
-    /**
-     * Validate that an image file exists in foundry-data or foundry-app directories
-     */
-    async validateImageExists(imagePath) {
-        if (!imagePath) return false;
-        
-        try {
-            // Check for various possible image locations
-            const possiblePaths = [];
-            
-            // 1. Core FoundryVTT app icons (foundry-app/resources/app/ui/icons/)
-            if (imagePath.startsWith('icons/')) {
-                possiblePaths.push(join(this.foundryEnv.foundryPath, 'resources', 'app', 'ui', imagePath));
-            }
-            
-            // 2. System icons (foundry-data/systems/{system}/icons/)
-            if (imagePath.startsWith('systems/')) {
-                possiblePaths.push(join(this.foundryEnv.dataPath, imagePath));
-            }
-            
-            // 3. User data icons (foundry-data/Data/icons/)
-            if (imagePath.startsWith('icons/')) {
-                possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
-            }
-            
-            // 4. Direct path in user data (foundry-data/Data/)
-            possiblePaths.push(join(this.foundryEnv.dataPath, 'Data', imagePath));
-            
-            // 5. Alternative core locations (foundry-app/resources/app/public/icons/)
-            if (imagePath.startsWith('icons/')) {
-                possiblePaths.push(join(this.foundryEnv.foundryPath, 'resources', 'app', 'public', imagePath));
-            }
-            
-            // Check if any of these paths exist
-            for (const path of possiblePaths) {
-                if (existsSync(path)) {
-                    return true;
-                }
-            }
-            
-            return false;
-            
-        } catch (error) {
-            // If there's an error checking paths, return false (image doesn't exist)
-            return false;
-        }
-    }
-
-    /**
-     * List available images from core and user data
-     */
-    async listAvailableImages(args) {
-        const { verbose } = args;
-        
-        try {
-            const { readdir, stat } = await import('fs/promises');
-            const images = {
-                app: [],
-                systems: {},
-                data: []
-            };
-            
-            const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
-            
-            const scanDirectory = async (dir, baseDir, collection) => {
-                try {
-                    const entries = await readdir(dir, { withFileTypes: true });
-                    for (const entry of entries) {
-                        const fullPath = join(dir, entry.name);
-                        if (entry.isDirectory()) {
-                            await scanDirectory(fullPath, baseDir, collection);
-                        } else if (entry.isFile() && imageExtensions.some(ext => entry.name.toLowerCase().endsWith(ext))) {
-                            const relativePath = fullPath.replace(baseDir + '/', '');
-                            collection.push(relativePath);
-                        }
-                    }
-                } catch (error) {
-                    if (verbose) console.warn(`Could not scan directory ${dir}: ${error.message}`);
-                }
-            };
-
-            // 1. Scan foundry-app/resources/app/public
-            const appPublicPath = join(this.foundryEnv.foundryPath, 'resources', 'app', 'public');
-            if (existsSync(appPublicPath)) {
-                console.log('Scanning app public directory...');
-                await scanDirectory(appPublicPath, appPublicPath, images.app);
-            }
-
-            // 2. Scan foundry-data/systems/{systemId}
-            const systemsPath = this.foundryEnv.systemsPath;
-            if (existsSync(systemsPath)) {
-                const systemDirs = await readdir(systemsPath, { withFileTypes: true });
-                for (const systemDir of systemDirs) {
-                    if (systemDir.isDirectory()) {
-                        const systemId = systemDir.name;
-                        const systemPath = join(systemsPath, systemId);
-                        console.log(`Scanning ${systemId} system directory...`);
-                        images.systems[systemId] = [];
-                        await scanDirectory(systemPath, this.foundryEnv.dataPath, images.systems[systemId]);
-                    }
-                }
-            }
-
-            // 3. Scan foundry-data
-            const dataPath = this.foundryEnv.dataPath;
-            if (existsSync(dataPath)) {
-                console.log('Scanning data directory...');
-                await scanDirectory(dataPath, dataPath, images.data);
-            }
-            
-            // Display results
-            console.log('\n=== Available Images ===\n');
-
-            if (images.app.length > 0) {
-                console.log(`\n--- App Images (${images.app.length} found) ---`);
-                console.log('Usage path starts with: e.g., "icons/weapons/axes/axe-battle-black.webp"');
-                images.app.forEach(img => console.log(img));
-            }
-
-            for (const [systemId, systemImages] of Object.entries(images.systems)) {
-                if (systemImages.length > 0) {
-                    console.log(`\n--- ${systemId} System Images (${systemImages.length} found) ---`);
-                    console.log(`Usage path starts with: "systems/${systemId}/..."`);
-                    systemImages.forEach(img => console.log(img));
-                }
-            }
-            
-            if (images.data.length > 0) {
-                console.log(`\n--- User Data Images (${images.data.length} found) ---`);
-                 console.log('Usage path starts with: e.g., "worlds/..." or "modules/..."');
-                images.data.forEach(img => console.log(img));
-            }
-            
-        } catch (error) {
-            console.error(`Error listing images: ${error.message}`);
-            if (verbose) console.error(error.stack);
-            process.exit(1);
-        }
-    }
-
-
 }
 
 // Run the validator if this file is executed directly
@@ -1268,4 +602,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
 }
 
-export default FoundryValidator;
+// Export both classes
+export { FoundryValidator };
+export default FoundryManager;

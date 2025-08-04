@@ -26,6 +26,8 @@
   "author": "FoundryVTT Object Validator",
   "license": "MIT",
   "dependencies": {
-    "classic-level": "^3.0.0"
+    "@anthropic-ai/claude-code": "^1.0.67",
+    "classic-level": "^3.0.0",
+    "puppeteer": "^22.15.0"
   }
 }
