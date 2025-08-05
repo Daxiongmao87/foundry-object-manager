@@ -16,13 +16,51 @@ export class WorldManager {
         }
 
         const documents = await page.evaluate(async (type, pattern) => {
-            const collection = game.collections.get(type);
+            // Check if game and collections are available
+            if (!window.game || !window.game.collections) {
+                return { error: `Game context not fully initialized. Collections not available.` };
+            }
+            
+            // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
+            let collection = game.collections.get(type);
+            let filterByType = null;
+            
+            // If not a direct collection, check if it's a subtype
+            if (!collection) {
+                // Check if it's an Item subtype
+                if (window.CONFIG?.Item?.typeLabels?.[type]) {
+                    collection = game.collections.get('Item');
+                    filterByType = type;
+                } 
+                // Check if it's an Actor subtype
+                else if (window.CONFIG?.Actor?.typeLabels?.[type]) {
+                    collection = game.collections.get('Actor');
+                    filterByType = type;
+                }
+                // Check other document types
+                else {
+                    for (const [docType, config] of Object.entries(window.CONFIG)) {
+                        if (config?.typeLabels?.[type]) {
+                            collection = game.collections.get(docType);
+                            filterByType = type;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             if (!collection) {
                 return { error: `Collection for type "${type}" not found.` };
             }
 
             let results = Array.from(collection.values());
+            
+            // Filter by subtype if needed
+            if (filterByType) {
+                results = results.filter(doc => doc.type === filterByType);
+            }
 
+            // Filter by name pattern if provided
             if (pattern) {
                 const regex = new RegExp(pattern.replace(/\*/g, '.*').replace(/\?/g, '.'), 'i');
                 results = results.filter(doc => regex.test(doc.name));
@@ -53,10 +91,49 @@ export class WorldManager {
 
         const result = await page.evaluate(async (type, docData) => {
             try {
-                const collection = game.collections.get(type);
+                // Check if game and collections are available
+                if (!window.game || !window.game.collections) {
+                    return { error: `Game context not fully initialized. Collections not available.` };
+                }
+                
+                // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
+                let collection = game.collections.get(type);
+                let actualType = type;
+                
+                // If not a direct collection, check if it's a subtype
+                if (!collection) {
+                    // Check if it's an Item subtype
+                    if (window.CONFIG?.Item?.typeLabels?.[type]) {
+                        collection = game.collections.get('Item');
+                        actualType = 'Item';
+                        // Ensure the data has the correct type field
+                        docData.type = type;
+                    } 
+                    // Check if it's an Actor subtype
+                    else if (window.CONFIG?.Actor?.typeLabels?.[type]) {
+                        collection = game.collections.get('Actor');
+                        actualType = 'Actor';
+                        // Ensure the data has the correct type field
+                        docData.type = type;
+                    }
+                    // Check other document types
+                    else {
+                        for (const [docType, config] of Object.entries(window.CONFIG)) {
+                            if (config?.typeLabels?.[type]) {
+                                collection = game.collections.get(docType);
+                                actualType = docType;
+                                // Ensure the data has the correct type field
+                                docData.type = type;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
                 if (!collection) {
                     return { error: `Collection for type "${type}" not found.` };
                 }
+                
                 const createdDocument = await collection.documentClass.create(docData);
                 return { success: true, id: createdDocument.id, name: createdDocument.name };
             } catch (e) {
@@ -80,14 +157,52 @@ export class WorldManager {
 
         const result = await page.evaluate(async (type, docId, updateData) => {
             try {
-                const collection = game.collections.get(type);
+                // Check if game and collections are available
+                if (!window.game || !window.game.collections) {
+                    return { error: `Game context not fully initialized. Collections not available.` };
+                }
+                
+                // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
+                let collection = game.collections.get(type);
+                
+                // If not a direct collection, check if it's a subtype
+                if (!collection) {
+                    // Check if it's an Item subtype
+                    if (window.CONFIG?.Item?.typeLabels?.[type]) {
+                        collection = game.collections.get('Item');
+                    } 
+                    // Check if it's an Actor subtype
+                    else if (window.CONFIG?.Actor?.typeLabels?.[type]) {
+                        collection = game.collections.get('Actor');
+                    }
+                    // Check other document types
+                    else {
+                        for (const [docType, config] of Object.entries(window.CONFIG)) {
+                            if (config?.typeLabels?.[type]) {
+                                collection = game.collections.get(docType);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
                 if (!collection) {
                     return { error: `Collection for type "${type}" not found.` };
                 }
+                
                 const document = collection.get(docId);
                 if (!document) {
-                    return { error: `Document with ID "${docId}" not found in collection "${type}".` };
+                    // If document not found in collection, it might be a filtered subtype
+                    // Try to find it by searching all documents of the correct type
+                    const allDocs = Array.from(collection.values());
+                    const foundDoc = allDocs.find(doc => doc.id === docId && (!type || doc.type === type));
+                    if (!foundDoc) {
+                        return { error: `Document with ID "${docId}" not found.` };
+                    }
+                    const updatedDocument = await foundDoc.update(updateData);
+                    return { success: true, id: updatedDocument.id, name: updatedDocument.name };
                 }
+                
                 const updatedDocument = await document.update(updateData);
                 return { success: true, id: updatedDocument.id, name: updatedDocument.name };
             } catch (e) {
@@ -111,14 +226,52 @@ export class WorldManager {
 
         const result = await page.evaluate(async (type, docId) => {
             try {
-                const collection = game.collections.get(type);
+                // Check if game and collections are available
+                if (!window.game || !window.game.collections) {
+                    return { error: `Game context not fully initialized. Collections not available.` };
+                }
+                
+                // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
+                let collection = game.collections.get(type);
+                
+                // If not a direct collection, check if it's a subtype
+                if (!collection) {
+                    // Check if it's an Item subtype
+                    if (window.CONFIG?.Item?.typeLabels?.[type]) {
+                        collection = game.collections.get('Item');
+                    } 
+                    // Check if it's an Actor subtype
+                    else if (window.CONFIG?.Actor?.typeLabels?.[type]) {
+                        collection = game.collections.get('Actor');
+                    }
+                    // Check other document types
+                    else {
+                        for (const [docType, config] of Object.entries(window.CONFIG)) {
+                            if (config?.typeLabels?.[type]) {
+                                collection = game.collections.get(docType);
+                                break;
+                            }
+                        }
+                    }
+                }
+                
                 if (!collection) {
                     return { error: `Collection for type "${type}" not found.` };
                 }
+                
                 const document = collection.get(docId);
                 if (!document) {
-                    return { error: `Document with ID "${docId}" not found in collection "${type}".` };
+                    // If document not found in collection, it might be a filtered subtype
+                    // Try to find it by searching all documents
+                    const allDocs = Array.from(collection.values());
+                    const foundDoc = allDocs.find(doc => doc.id === docId);
+                    if (!foundDoc) {
+                        return { error: `Document with ID "${docId}" not found.` };
+                    }
+                    await foundDoc.delete();
+                    return { success: true, id: docId };
                 }
+                
                 await document.delete();
                 return { success: true, id: docId };
             } catch (e) {

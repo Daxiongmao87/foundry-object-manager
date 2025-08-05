@@ -293,6 +293,15 @@ export class FoundryPuppeteerValidator {
             // If still not authenticated, try to join without any password
             if (!authenticated) {
                 console.log('⚠️  No credentials used or authentication failed, trying to join without password...');
+                
+                // Clear any password fields first
+                const worldPasswordField = await this.serverManager.page.$('input[name="password"]');
+                if (worldPasswordField) {
+                    await worldPasswordField.click({ clickCount: 3 }); // Select all
+                    await worldPasswordField.press('Backspace'); // Clear
+                    console.log('   Cleared password field');
+                }
+                
                 const joinButton = await this.serverManager.page.$('#join-game-form button[name="join"]');
                 if (joinButton) {
                     // Click and wait for either navigation or URL change
@@ -360,9 +369,9 @@ export class FoundryPuppeteerValidator {
         try {
             await this.serverManager.page.waitForFunction(
                 () => {
-                    console.log('Context check - Game:', !!window.game, window.game?.ready, 'Foundry:', !!window.foundry, 'Config:', !!window.CONFIG);
-                    // Accept either a ready game context OR a valid setup context with FoundryVTT
-                    return (window.game && window.game.ready === true) || 
+                    console.log('Context check - Game:', !!window.game, window.game?.ready, 'Collections:', !!window.game?.collections, 'Foundry:', !!window.foundry, 'Config:', !!window.CONFIG);
+                    // Accept either a ready game context with collections OR a valid setup context
+                    return (window.game && window.game.ready === true && window.game.collections) || 
                            (window.foundry && window.CONFIG && document.title.includes('Foundry Virtual Tabletop'));
                 },
                 { timeout: 0 }
@@ -409,6 +418,24 @@ export class FoundryPuppeteerValidator {
 
         console.log(`✅ Validator initialized for ${validationCheck.systemTitle} (${validationCheck.systemId})`);
         console.log(`   World: ${validationCheck.worldTitle} (${validationCheck.worldId})`);
+        
+        // Give the game a moment to fully initialize collections
+        console.log('⏳ Waiting for game collections to initialize...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Verify collections are now available
+        const collectionsCheck = await this.serverManager.page.evaluate(() => {
+            return {
+                hasCollections: !!window.game?.collections,
+                collectionNames: window.game?.collections ? Array.from(window.game.collections.keys()) : []
+            };
+        });
+        
+        console.log('📦 Collections check:', collectionsCheck);
+        
+        if (!collectionsCheck.hasCollections) {
+            throw new Error('Game collections failed to initialize');
+        }
         
         this.initialized = true;
     }

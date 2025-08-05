@@ -65,6 +65,7 @@ export class FoundryManager {
         this.verbose = options.verbose || false;
         this.selectedWorld = null;
         this.selectedSystem = null;
+        this.worldOption = options.server?.world || null; // Store world option from server config
     }
 
     /**
@@ -159,7 +160,7 @@ export class FoundryManager {
      */
     async _ensureInitialized() {
         if (!this.initialized) {
-            await this.initialize();
+            await this.initialize(this.worldOption);
         }
     }
 
@@ -594,15 +595,73 @@ ${docType}:`);
                 console.log(`
 🔍 Searching for ${args.type} documents...`);
                 await this.manager._ensureInitialized();
-                const documents = await this.manager.worldManager.search(args.type, args.name);
-                if (documents.length === 0) {
-                    console.log('   No documents found matching criteria.');
-                } else {
-                    console.log(`   Found ${documents.length} documents:`);
-                    documents.forEach(doc => {
-                        console.log(`   - ID: ${doc.id}, Name: ${doc.name}`);
-                    });
+                
+                try {
+                    const documents = await this.manager.worldManager.search(args.type, args.name);
+                    if (documents.length === 0) {
+                        console.log('   No documents found matching criteria.');
+                    } else {
+                        console.log(`   Found ${documents.length} documents:`);
+                        documents.forEach(doc => {
+                            console.log(`   - ID: ${doc.id}, Name: ${doc.name}`);
+                        });
+                    }
+                } catch (error) {
+                    // If it's a type error, show available types
+                    if (error.message.includes('not found') || error.message.includes('Invalid type')) {
+                        console.error(`\n❌ Error: ${error.message}`);
+                        
+                        // Get available types from the system
+                        try {
+                            const availableTypes = await this.manager.validator.getSystemObjectTypes();
+                            console.log('\n📋 Available object types for this system:');
+                            
+                            // Group by document type
+                            const grouped = {};
+                            for (const [key, info] of Object.entries(availableTypes)) {
+                                if (!grouped[info.documentType]) {
+                                    grouped[info.documentType] = [];
+                                }
+                                grouped[info.documentType].push({ key, label: info.label });
+                            }
+                            
+                            // Display grouped types
+                            for (const [docType, types] of Object.entries(grouped)) {
+                                console.log(`\n  ${docType}s:`);
+                                types.forEach(({ key, label }) => {
+                                    console.log(`    - ${key}: ${label}`);
+                                });
+                            }
+                            
+                            console.log('\n💡 Tip: Use one of the above types with the -t option');
+                        } catch (typeError) {
+                            // Fallback: try to get types from listTypes
+                            try {
+                                const types = await this.manager.listTypes();
+                                console.log(`\n📋 Available types for ${types.systemTitle}:`);
+                                
+                                for (const [docType, subtypes] of Object.entries(types.types)) {
+                                    const subtypeList = Object.keys(subtypes);
+                                    if (subtypeList.length > 0) {
+                                        console.log(`\n${docType}:`);
+                                        subtypeList.forEach(type => {
+                                            console.log(`   - ${type}: ${subtypes[type]}`);
+                                        });
+                                    }
+                                }
+                                
+                                console.log('\n💡 Tip: Use one of the above types with the -t option');
+                            } catch (fallbackError) {
+                                console.error('Could not retrieve available types:', fallbackError.message);
+                            }
+                        }
+                        await this.manager.cleanup();
+                        process.exit(1);
+                    } else {
+                        throw error;
+                    }
                 }
+                
                 await this.manager.cleanup();
                 process.exit(0);
             }
