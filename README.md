@@ -16,27 +16,26 @@ This is a command-line tool for managing FoundryVTT objects, such as actors and 
     ```bash
     npm install
     ```
-3.  Ensure you have a complete FoundryVTT installation in the `foundry-files/` directory.
-    Note: This project now uses Puppeteer to interact with FoundryVTT directly, eliminating system import issues.
+3.  This tool automatically launches and manages its own FoundryVTT instance using Puppeteer. No manual FoundryVTT installation is required in a specific directory.
 
-## One-Time Setup: Manual World Activation
+## One-Time Setup: Initial World Activation
 
-Due to FoundryVTT's architecture, package discovery (worlds, systems, modules) doesn't work properly in headless mode. Therefore, you need to manually activate a world once per FoundryVTT session:
+Due to FoundryVTT's architecture, package discovery (worlds, systems, modules) doesn't work properly in headless mode without an initial world activation. You need to manually activate a world once per FoundryVTT session:
 
-1. Start the validation tool (it will launch FoundryVTT):
-   ```bash
-   node test-basic-functionality.mjs
-   ```
+1.  Start the tool with any command that requires world interaction (e.g., listing worlds):
+    ```bash
+    node foundry-manager.mjs --list-worlds
+    ```
 
-2. If no world is active, you'll see instructions. Follow them:
-   - Open your browser and navigate to: http://localhost:30000
-   - If prompted, enter your admin password
-   - On the setup page, click on any world to activate it
-   - Wait for the world to fully load (you'll see the game interface)
+2.  If no world is active, the tool will launch FoundryVTT and provide instructions. Follow them:
+    *   Open your browser and navigate to: `http://localhost:30000`
+    *   If prompted, enter your admin password (you can set it using `--set-admin-password`)
+    *   On the setup page, click on any world to activate it.
+    *   Wait for the world to fully load (you'll see the game interface).
 
-3. Return to the terminal and run the command again. The tool will now work with the active world.
+3.  Return to the terminal and run your `foundry-manager.mjs` command again. The tool will now work with the active world.
 
-**Note:** The world remains active until you stop FoundryVTT. You only need to do this once per session.
+**Note:** The world remains active until you stop the `foundry-manager.mjs` process. You only need to perform this manual activation once per session.
 
 ## Usage
 
@@ -45,19 +44,19 @@ The main script is `foundry-manager.mjs`. You can run it with `node`.
 ### List Available Systems
 
 ```bash
-node foundry-manager.mjs -l
+node foundry-manager.mjs --list-systems
 ```
 
 ### List Available Worlds
 
 ```bash
-node foundry-manager.mjs -l --listWorlds
+node foundry-manager.mjs --list-worlds
 ```
 
 ### List Object Types for a System
 
 ```bash
-node foundry-manager.mjs -s dnd5e -l
+node foundry-manager.mjs --list-types -s dnd5e
 ```
 
 ### Validate an Object
@@ -69,7 +68,7 @@ node foundry-manager.mjs -s dnd5e -t actor '{"name":"Test Character","type":"cha
 You can also validate an object from a file:
 
 ```bash
-node foundry-manager.mjs -s dnd5e -t item < my-item.json
+node foundry-manager.mjs -s dnd5e -t item -f my-item.json
 ```
 
 ### Insert an Object into a World
@@ -78,23 +77,93 @@ node foundry-manager.mjs -s dnd5e -t item < my-item.json
 node foundry-manager.mjs -s dnd5e -t actor -w my-world -i '{"name":"Hero","type":"character"}'
 ```
 
-### Search for Objects in a World
+### CRUD Operations
+
+The tool supports Create, Read, Update, and Delete (CRUD) operations on objects within a world.
+
+**READ: List/Search Objects**
 
 ```bash
-node foundry-manager.mjs -s dnd5e -t actor -w my-world -r
+# List all characters in 'my-world'
+node foundry-manager.mjs -w my-world -t character -r
+
+# Search for characters by name pattern (e.g., starting with "Hero")
+node foundry-manager.mjs -w my-world -t character -r --name "Hero*"
 ```
 
-You can also search with more specific criteria:
+**CREATE: Insert a New Object**
 
 ```bash
-# Search by name (with wildcard)
-node foundry-manager.mjs -s dnd5e -t actor -w my-world -r --name "Test*"
+# Insert a new character into 'my-world'
+node foundry-manager.mjs -w my-world -t character -i '{"name":"New Hero","type":"character"}'
+```
 
-# Search with detailed output
-node foundry-manager.mjs -s dnd5e -t actor -w my-world -r --details --limit 5
+**UPDATE: Modify an Existing Object**
 
-# Search and show JSON data
-node foundry-manager.mjs -s dnd5e -t item -w my-world -r --json 500
+```bash
+# Update a character by its ID in 'my-world' (replace "abc123" with actual ID)
+node foundry-manager.mjs -w my-world -t character -u --id "abc123" '{"system.attributes.hp.value":50}'
+```
+
+**DELETE: Remove an Object**
+
+```bash
+# Delete a character by its ID from 'my-world' (replace "abc123" with actual ID)
+node foundry-manager.mjs -w my-world -t character -d --id "abc123"
+```
+
+### Image Validation
+
+You can manage and validate images used by FoundryVTT.
+
+```bash
+# List all available images from core and system folders
+node foundry-manager.mjs --list-images
+
+# Filter images by a pattern (e.g., all .webp images)
+node foundry-manager.mjs --list-images --image-pattern "*.webp"
+
+# Skip image validation when inserting/updating objects (allow creation without images)
+node foundry-manager.mjs -t actor -i '{"name":"No Image Actor"}' --no-image
+```
+
+### Schema Extraction
+
+You can extract and display the expected JSON schema for a given object type.
+
+```bash
+# Get schema for 'weapon' type from the currently active world
+node foundry-manager.mjs -t weapon --schema
+
+# Get schema for 'weapon' type from a specific system (e.g., dnd5e)
+node foundry-manager.mjs -s dnd5e -t weapon --schema
+```
+
+### Credential Management
+
+Manage the administrator and world passwords for your FoundryVTT instance.
+
+```bash
+# Set the administrator password (you will be prompted securely)
+node foundry-manager.mjs --set-admin-password
+
+# Set a specific world's password (you will be prompted securely)
+node foundry-manager.mjs --set-world-password
+
+# Check the current status of stored credentials
+node foundry-manager.mjs --credential-status
+
+# Clear all stored credentials
+node foundry-manager.mjs --clear-credentials
+```
+
+### Verbose Output
+
+Enable verbose output for more detailed information during operations.
+
+```bash
+# Run any command with verbose output
+node foundry-manager.mjs --list-systems -v
 ```
 
 ## Important Notes
