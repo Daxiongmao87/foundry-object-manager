@@ -8,6 +8,7 @@
  */
 
 import { ServerState } from './foundry-server-manager.mjs';
+import fs from 'fs/promises';
 
 // Custom error class for validation errors
 export class ValidationError extends Error {
@@ -32,7 +33,7 @@ export class FoundryPuppeteerValidator {
         }
         
         this.serverManager = serverManager;
-        this.validationTimeout = options.validationTimeout || 60000; // 60 seconds default
+        this.validationTimeout = options.validationTimeout || 10000; // 10 seconds default
         this.initialized = false;
         this._systemCache = null;
         this._objectTypeCache = null;
@@ -62,13 +63,42 @@ export class FoundryPuppeteerValidator {
             throw new Error('Browser must be initialized. Call serverManager.initializeBrowser() first');
         }
 
-        // 3. Navigate to game page
+        // 3. Navigate to game page - but handle the fact that world launch might not be complete
         console.log('🎮 Navigating to game interface...');
         const serverUrl = this.serverManager.getServerUrl();
-        await this.serverManager.page.goto(`${serverUrl}/game`, {
-            waitUntil: 'networkidle0',
-            timeout: this.validationTimeout
-        });
+        
+        try {
+            await this.serverManager.page.goto(`${serverUrl}/game`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 0  // Wait indefinitely
+            });
+        } catch (error) {
+            if (error.message.includes('timeout')) {
+                console.log('⚠️  Direct /game navigation timed out - world may still be launching');
+                console.log('   Falling back to setup page and waiting for world completion...');
+                
+                // Navigate to setup page instead
+                await this.serverManager.page.goto(`${serverUrl}/setup`, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 0
+                });
+                
+                // Wait for world launch to complete (look for navigation to /game)
+                console.log('   Waiting for world launch to complete...');
+                try {
+                    await this.serverManager.page.waitForFunction(
+                        () => window.location.pathname === '/game' || window.location.href.includes('/game'),
+                        { timeout: 120000 } // 2 minutes for world launch
+                    );
+                    console.log('✅ World launch completed, now on game page');
+                } catch (waitError) {
+                    console.log('⚠️  World launch did not complete within timeout');
+                    // Try to proceed anyway in case we can still access validation APIs
+                }
+            } else {
+                throw error; // Re-throw non-timeout errors
+            }
+        }
 
         // 4. Check current URL and handle redirects
         const currentUrl = this.serverManager.page.url();
@@ -82,13 +112,79 @@ export class FoundryPuppeteerValidator {
         
         if (hasAuthError) {
             console.log('🔐 Authentication required, attempting login...');
+
+            // DEBUG: Log all buttons and form elements on the /join page to a file
+            console.log('🔍 Debugging: Capturing DOM structure to join-page-debug.txt...');
+            
+            // Add a 3-second delay before capturing DOM structure
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            const pageUrl = this.serverManager.page.url();
+            const pageTitle = await this.serverManager.page.title();
+            const pageReadyState = await this.serverManager.page.evaluate(() => document.readyState);
+            const pageHtml = await this.serverManager.page.content();
+
+            let debugOutput = `--- Page Info ---
+`;
+            debugOutput += `URL: ${pageUrl}
+`;
+            debugOutput += `Title: ${pageTitle}
+`;
+            debugOutput += `Ready State: ${pageReadyState}
+
+`;
+
+            debugOutput += await this.serverManager.page.evaluate(() => {
+                let output = '';
+                const append = (msg) => { output += msg + '\n'; };
+
+                const buttons = Array.from(document.querySelectorAll('button'));
+                append('--- Buttons ---');
+                buttons.forEach((btn, index) => {
+                    append(`Button ${index}:`);
+                    append(`  OuterHTML: ${btn.outerHTML}`);
+                    append(`  TextContent: ${btn.textContent.trim()}`);
+                    append(`  Attributes: ${JSON.stringify(Array.from(btn.attributes).map(attr => ({ name: attr.name, value: attr.value })))}`);
+                });
+
+                const inputs = Array.from(document.querySelectorAll('input'));
+                append('--- Inputs ---');
+                inputs.forEach((input, index) => {
+                    append(`Input ${index}:`);
+                    append(`  OuterHTML: ${input.outerHTML}`);
+                    append(`  Type: ${input.type}`);
+                    append(`  Name: ${input.name}`);
+                    append(`  Attributes: ${JSON.stringify(Array.from(input.attributes).map(attr => ({ name: attr.name, value: attr.value })))}`);
+                });
+
+                const forms = Array.from(document.querySelectorAll('form'));
+                append('--- Forms ---');
+                forms.forEach((form, index) => {
+                    append(`Form ${index}:`);
+                    append(`  OuterHTML: ${form.outerHTML}`);
+                    append(`  Action: ${form.action}`);
+                    append(`  Method: ${form.method}`);
+                    append(`  Attributes: ${JSON.stringify(Array.from(form.attributes).map(attr => ({ name: attr.name, value: attr.value })))}`);
+                });
+                return output;
+            });
+            
+            debugOutput += `
+--- Full Page HTML ---
+`;
+            debugOutput += pageHtml;
+
+            await fs.writeFile('/home/patrick/Projects/foundry-object-manager/join-page-debug.txt', debugOutput);
+            console.log('✅ DOM structure and page info written to join-page-debug.txt');
+            
+            // If we're on a Critical Failure page, navigate to setup first
             
             // If we're on a Critical Failure page, navigate to setup first
             if (pageTitle.includes('Critical Failure')) {
                 console.log('   Critical Failure detected, navigating to setup page...');
                 await this.serverManager.page.goto(`${serverUrl}/setup`, {
                     waitUntil: 'networkidle0',
-                    timeout: this.validationTimeout
+                    timeout: 0
                 });
                 // Wait a moment for the setup page to fully load
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -106,7 +202,7 @@ export class FoundryPuppeteerValidator {
                             console.log('   World element clicked, waiting for navigation...');
                             await this.serverManager.page.waitForNavigation({ 
                                 waitUntil: 'networkidle0', 
-                                timeout: this.validationTimeout 
+                                timeout: 0 
                             });
                         }
                     } catch (error) {
@@ -115,56 +211,148 @@ export class FoundryPuppeteerValidator {
                 }
             }
             
-            // Get admin password
+            // Get credentials
             const adminPassword = await this.serverManager.credentialManager.getAdminPassword();
+            const worldPassword = await this.serverManager.credentialManager.getWorldPassword();
             
-            if (adminPassword) {
-                console.log('🔑 Using admin credentials for authentication...');
+            let authenticated = false;
+
+            // Check for user selection dropdown and select a user if available
+            const userSelect = await this.serverManager.page.$('select[name="userid"]');
+            if (userSelect) {
+                console.log('👤 User selection dropdown found. Attempting to select a user...');
+                const options = await this.serverManager.page.$$('select[name="userid"] option');
+                let selectedUser = false;
                 
-                // Look for admin password field
-                const adminPasswordField = await this.serverManager.page.$('input[name="adminPassword"]');
-                if (adminPasswordField) {
-                    console.log('   Found admin password field, entering credentials...');
-                    await adminPasswordField.type(adminPassword);
+                // Get all option values and texts
+                for (const option of options) {
+                    const value = await option.evaluate(el => el.value);
+                    const text = await option.evaluate(el => el.textContent.trim());
                     
-                    // Find and click join button
-                    const joinButton = await this.serverManager.page.$('button[type="submit"], input[type="submit"], button[name="join"]');
-                    if (joinButton) {
-                        console.log('   Submitting admin login...');
-                        await Promise.all([
-                            this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: this.validationTimeout }),
-                            joinButton.click()
-                        ]);
-                        console.log('✅ Admin authentication completed');
-                    } else {
-                        console.error('❌ Join button not found');
-                    }
-                } else {
-                    // Try world-level authentication
-                    const worldPasswordField = await this.serverManager.page.$('input[name="password"]');
-                    if (worldPasswordField) {
-                        console.log('   No admin field, trying world authentication...');
-                        // For now, try empty password or skip auth
-                        const joinButton = await this.serverManager.page.$('button[type="submit"], input[type="submit"]');
-                        if (joinButton) {
-                            await joinButton.click();
-                            await this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: this.validationTimeout });
-                        }
+                    if (value && value.length > 0) { // Select the first available user
+                        await userSelect.select(value);
+                        console.log(`   Selected user: ${text} (${value})`);
+                        selectedUser = true;
+                        break;
                     }
                 }
-            } else {
-                console.log('⚠️  No admin password configured, trying to join without password...');
-                // Try to join without password
-                const joinButton = await this.serverManager.page.$('button[type="submit"], input[type="submit"]');
+                
+                if (!selectedUser) {
+                    console.log('   No valid user found to select in the dropdown.');
+                }
+            }
+
+            // Try admin password first if available and field exists
+            const adminPasswordField = await this.serverManager.page.$('input[name="adminPassword"]');
+            if (adminPassword && adminPasswordField) {
+                console.log('🔑 Using admin credentials for authentication...');
+                await adminPasswordField.type(adminPassword);
+                const joinButton = await this.serverManager.page.$('#join-game-setup button[type="submit"]');
                 if (joinButton) {
+                    console.log('   Submitting admin login...');
                     await joinButton.click();
-                    await this.serverManager.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    const afterClickUrl = this.serverManager.page.url();
+                    if (!afterClickUrl.includes('/join') && !afterClickUrl.includes('/auth')) {
+                        console.log('✅ Admin authentication successful');
+                        authenticated = true;
+                    } else {
+                        console.log('⚠️  Admin authentication may have failed, still on auth page');
+                    }
+                } else {
+                    console.error('❌ Join button not found for admin login');
+                }
+            } 
+            
+            // If not authenticated by admin, try world password if available and field exists
+            if (!authenticated) {
+                const worldPasswordField = await this.serverManager.page.$('input[name="password"]');
+                if (worldPassword && worldPasswordField) {
+                    console.log('🔑 Using world credentials for authentication...');
+                    await worldPasswordField.type(worldPassword);
+                    const joinButton = await this.serverManager.page.$('#join-game-form button[name="join"]');
+                    if (joinButton) {
+                        console.log('   Submitting world login...');
+                        await joinButton.click();
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        
+                        const afterClickUrl = this.serverManager.page.url();
+                        if (afterClickUrl.includes('/game') || !afterClickUrl.includes('/join')) {
+                            console.log('✅ World authentication successful');
+                            authenticated = true;
+                        } else {
+                            console.log('⚠️  World authentication may have failed, still on join page');
+                        }
+                    } else {
+                        console.error('❌ Join button not found for world login');
+                    }
+                }
+            }
+
+            // If still not authenticated, try to join without any password
+            if (!authenticated) {
+                console.log('⚠️  No credentials used or authentication failed, trying to join without password...');
+                const joinButton = await this.serverManager.page.$('#join-game-form button[name="join"]');
+                if (joinButton) {
+                    // Click and wait for either navigation or URL change
+                    await joinButton.click();
+                    console.log('   Clicked join button, waiting for response...');
+                    
+                    // Wait a bit for any immediate response
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    // Check if URL changed or if we're still on join page
+                    const afterClickUrl = this.serverManager.page.url();
+                    if (afterClickUrl.includes('/game') || !afterClickUrl.includes('/join')) {
+                        console.log('✅ Join successful, navigated away from join page');
+                        authenticated = true;
+                    } else {
+                        console.log('⚠️  Still on join page after clicking');
+                        
+                        // Check for any error messages
+                        const errorMessages = await this.serverManager.page.evaluate(() => {
+                            const notifications = document.querySelectorAll('.notification.error, .error-message, [class*="error"]');
+                            return Array.from(notifications).map(el => el.textContent.trim()).filter(text => text.length > 0);
+                        });
+                        
+                        if (errorMessages.length > 0) {
+                            console.log('❌ Join errors:', errorMessages);
+                        }
+                        
+                        // Try waiting for navigation in case it's delayed
+                        try {
+                            await this.serverManager.page.waitForNavigation({ 
+                                waitUntil: 'domcontentloaded', 
+                                timeout: 5000 
+                            });
+                            console.log('✅ Navigation completed after delay');
+                            authenticated = true;
+                        } catch (navError) {
+                            console.log('⚠️  No navigation occurred within 5 seconds');
+                        }
+                    }
+                } else {
+                    console.log('❌ No join button found for unauthenticated access.');
                 }
             }
             
             // Check if we're now on the game page
             const newUrl = this.serverManager.page.url();
             console.log(`📍 Post-auth URL: ${newUrl}`);
+            
+            // Re-check for authentication error after attempts
+            const newPageTitle = await this.serverManager.page.title();
+            const stillHasAuthError = newPageTitle.includes('Critical Failure') || 
+                                       newUrl.includes('/join') || 
+                                       newUrl.includes('/auth');
+
+            if (stillHasAuthError) {
+                console.error('❌ Authentication failed after all attempts. Still on join/auth page.');
+                throw new Error('Authentication failed: Could not access game context after login attempts.');
+            } else {
+                console.log('✅ Authentication appears successful, proceeding to game context check.');
+            }
         }
 
         // 5. Wait for either game context or valid setup context
@@ -177,7 +365,7 @@ export class FoundryPuppeteerValidator {
                     return (window.game && window.game.ready === true) || 
                            (window.foundry && window.CONFIG && document.title.includes('Foundry Virtual Tabletop'));
                 },
-                { timeout: this.validationTimeout }
+                { timeout: 0 }
             );
             console.log('✅ Game or setup context ready');
         } catch (error) {

@@ -1,0 +1,201 @@
+--- Page Info ---
+URL: http://localhost:30000/join
+Title: Testania
+Ready State: complete
+
+--- Buttons ---
+Button 0:
+  OuterHTML: <button type="submit" name="join" class="bright">
+            <i class="fas fa-check"></i>
+            <label>Join Game Session</label>
+        </button>
+  TextContent: Join Game Session
+  Attributes: [{"name":"type","value":"submit"},{"name":"name","value":"join"},{"name":"class","value":"bright"}]
+Button 1:
+  OuterHTML: <button type="submit" class="bright">
+            <i class="fas fa-lock"></i>
+            <label>Return to Setup</label>
+        </button>
+  TextContent: Return to Setup
+  Attributes: [{"name":"type","value":"submit"},{"name":"class","value":"bright"}]
+--- Inputs ---
+Input 0:
+  OuterHTML: <input type="password" name="password" placeholder="Password" value="" autocomplete="off">
+  Type: password
+  Name: password
+  Attributes: [{"name":"type","value":"password"},{"name":"name","value":"password"},{"name":"placeholder","value":"Password"},{"name":"value","value":""},{"name":"autocomplete","value":"off"}]
+Input 1:
+  OuterHTML: <input type="password" name="adminPassword" value="" placeholder="Administrator Password" autocomplete="current-password">
+  Type: password
+  Name: adminPassword
+  Attributes: [{"name":"type","value":"password"},{"name":"name","value":"adminPassword"},{"name":"value","value":""},{"name":"placeholder","value":"Administrator Password"},{"name":"autocomplete","value":"current-password"}]
+--- Forms ---
+Form 0:
+  OuterHTML: <form class="application standard-form framed" autocomplete="off" data-application-part="form" id="join-game-form">
+    <h2 class="divider">Join Game Session</h2>
+    <div class="form-group">
+        <label class="icon" data-tooltip="Select User"><i class="fas fa-user"></i></label>
+        <div class="form-fields">
+            <select name="userid">
+                <option value=""></option>
+                    <option value="6ZNMCFEM1mw8Hfh6">Gamemaster</option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="icon" data-tooltip="User Password"><i class="fas fa-key"></i></label>
+        <div class="form-fields">
+            <input type="password" name="password" placeholder="Password" value="" autocomplete="off">
+        </div>
+    </div>
+    <footer class="form-footer">
+        <button type="submit" name="join" class="bright">
+            <i class="fas fa-check"></i>
+            <label>Join Game Session</label>
+        </button>
+    </footer>
+</form>
+  Action: http://localhost:30000/join
+  Method: get
+  Attributes: [{"name":"class","value":"application standard-form framed"},{"name":"autocomplete","value":"off"},{"name":"data-application-part","value":"form"},{"name":"id","value":"join-game-form"}]
+Form 1:
+  OuterHTML: <form class="application standard-form framed" data-application-part="setup" id="join-game-setup">
+    <h2 class="divider">Return to Setup</h2>
+    <div class="form-group">
+        <label class="icon" data-tooltip="Administrator Password">
+            <i class="fas fa-key"></i>
+        </label>
+        <input type="password" name="adminPassword" value="" placeholder="Administrator Password" autocomplete="current-password">
+    </div>
+    <footer class="form-footer">
+        <button type="submit" class="bright">
+            <i class="fas fa-lock"></i>
+            <label>Return to Setup</label>
+        </button>
+    </footer>
+</form>
+  Action: http://localhost:30000/join
+  Method: get
+  Attributes: [{"name":"class","value":"application standard-form framed"},{"name":"data-application-part","value":"setup"},{"name":"id","value":"join-game-setup"}]
+
+--- Full Page HTML ---
+<!DOCTYPE html><html lang="en"><head>
+    <!-- Page Metadata -->
+    <title>Testania</title>
+    <meta name="description" content="Foundry Virtual Tabletop - A Self-Hosted &amp; Modern Role-playing Platform">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" href="icons/vtt.png">
+
+    <!-- Included Stylesheets -->
+    <link href="fonts/fontawesome/css/all.min.css" rel="stylesheet" type="text/css" media="all">
+    <link href="css/foundry2.css" rel="stylesheet" type="text/css" media="all">
+
+    <!-- Included Scripts -->
+    <script defer="" src="scripts/jquery.min.js"></script>
+    <script defer="" src="scripts/handlebars.min.js"></script>
+    <script defer="" src="scripts/handlebars-intl.min.js"></script>
+    <script defer="" src="scripts/pixi.min.js"></script>
+    <script defer="" src="scripts/particle-emitter.min.js"></script>
+    <script defer="" src="scripts/pixi-graphics-smooth.js"></script>
+    <script defer="" src="scripts/basis.min.js"></script>
+    <script defer="" src="scripts/socket.io.min.js"></script>
+    <script defer="" src="scripts/tinymce.min.js"></script>
+    <script defer="" src="scripts/clipper/clipper.js"></script>
+    <script defer="" src="scripts/earcut-edges/earcut-edges.js"></script>
+    <script defer="" src="scripts/showdown.js"></script>
+    <script defer="" src="scripts/spark-md5.min.js"></script>
+    <script defer="" src="scripts/foundry-esm.js"></script>
+    <script defer="" src="scripts/foundry.js"></script>
+    <script defer="" src="scripts/setup.js"></script>
+
+    <!-- Inline Scripts -->
+    <script>
+    const SIGNED_EULA=true;
+    const ROUTE_PREFIX="";
+    const MESSAGES=null;
+    </script>
+
+    <!-- Inline Styles -->
+</head>
+
+<body class="auth join flexcol theme-foundry join-theme-default">
+    <div id="main-background"></div>
+    <ol id="notifications"></ol>
+
+    <!-- Page Header -->
+    <header id="main-header" class="flexcol">
+        <h1>Testania</h1>
+    </header>
+
+    <!-- Body Content -->
+    <div id="join-game"><form class="application standard-form framed" autocomplete="off" data-application-part="form" id="join-game-form">
+    <h2 class="divider">Join Game Session</h2>
+    <div class="form-group">
+        <label class="icon" data-tooltip="Select User"><i class="fas fa-user"></i></label>
+        <div class="form-fields">
+            <select name="userid">
+                <option value=""></option>
+                    <option value="6ZNMCFEM1mw8Hfh6">Gamemaster</option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="icon" data-tooltip="User Password"><i class="fas fa-key"></i></label>
+        <div class="form-fields">
+            <input type="password" name="password" placeholder="Password" value="" autocomplete="off">
+        </div>
+    </div>
+    <footer class="form-footer">
+        <button type="submit" name="join" class="bright">
+            <i class="fas fa-check"></i>
+            <label>Join Game Session</label>
+        </button>
+    </footer>
+</form><div class="application standard-form framed" data-application-part="details" id="join-game-details">
+    <h2 class="divider">Game Details</h2>
+    <div class="form-group">
+        <label><i class="fas fa-clock"></i> Next Session<span id="next-tz"></span></label>
+        <div class="form-fields">
+            <span></span>
+        </div>
+    </div>
+    <div class="form-group">
+        <label><i class="fas fa-users"></i> Current Players</label>
+        <div class="form-fields current-players">
+            <span class="count">0</span>
+            <span class="sep">/</span>
+            <span class="count">1</span>
+        </div>
+    </div>
+</div><form class="application standard-form framed" data-application-part="setup" id="join-game-setup">
+    <h2 class="divider">Return to Setup</h2>
+    <div class="form-group">
+        <label class="icon" data-tooltip="Administrator Password">
+            <i class="fas fa-key"></i>
+        </label>
+        <input type="password" name="adminPassword" value="" placeholder="Administrator Password" autocomplete="current-password">
+    </div>
+    <footer class="form-footer">
+        <button type="submit" class="bright">
+            <i class="fas fa-lock"></i>
+            <label>Return to Setup</label>
+        </button>
+    </footer>
+</form><article class="application framed" data-application-part="world" id="join-game-world">
+    <h2 class="divider">World Description</h2>
+    <div id="world-description" class="scrollable">
+        
+    </div>
+</article></div>
+
+    <!-- Footer Watermark -->
+    <footer id="watermark" class="flexcol">
+        <p id="software-version">Version 12 Build 331</p>
+    </footer>
+
+    <!-- Global Tooltip Element -->
+    <aside id="tooltip" role="tooltip"></aside>
+
+</body></html>

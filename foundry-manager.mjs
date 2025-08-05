@@ -593,6 +593,7 @@ ${docType}:`);
                 }
                 console.log(`
 🔍 Searching for ${args.type} documents...`);
+                await this.manager._ensureInitialized();
                 const documents = await this.manager.worldManager.search(args.type, args.name);
                 if (documents.length === 0) {
                     console.log('   No documents found matching criteria.');
@@ -629,6 +630,7 @@ ${docType}:`);
 
                 console.log(`
 ➕ Creating ${args.type} document...`);
+                await this.manager._ensureInitialized();
                 const result = await this.manager.worldManager.create(args.type, jsonData);
                 console.log(`✅ Document created successfully! ID: ${result.id}, Name: ${result.name}`);
                 await this.manager.cleanup();
@@ -661,6 +663,7 @@ ${docType}:`);
                 }
 
                 console.log(`\n🔄 Updating ${args.type} document with ID: ${args.id}...`);
+                await this.manager._ensureInitialized();
                 const result = await this.manager.worldManager.update(args.type, args.id, jsonData);
                 console.log(`✅ Document updated successfully! ID: ${result.id}, Name: ${result.name}`);
                 await this.manager.cleanup();
@@ -680,6 +683,7 @@ ${docType}:`);
 
                 console.log(`
 🗑️ Deleting ${args.type} document with ID: ${args.id}...`);
+                await this.manager._ensureInitialized();
                 const result = await this.manager.worldManager.delete(args.type, args.id);
                 console.log(`✅ Document with ID: ${result.id} deleted successfully!`);
                 await this.manager.cleanup();
