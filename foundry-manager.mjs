@@ -170,7 +170,7 @@ export class FoundryManager {
      * @param {Object} data - Document data to validate
      * @returns {Promise<Object>} Validation result
      */
-    async validateDocument(type, data) {
+    async validateDocument(type, data, options = {}) {
         await this._ensureInitialized();
 
         // Determine document type (Item vs Actor)
@@ -208,7 +208,7 @@ export class FoundryManager {
             data.type = type;
         }
 
-        return await this.validator.validateDocument(documentType, data);
+        return await this.validator.validateDocument(documentType, data, options);
     }
 
     /**
@@ -259,6 +259,15 @@ export class FoundryManager {
     async listTypes() {
         await this._ensureInitialized();
         return await this.validator.getAvailableTypes();
+    }
+
+    /**
+     * List available images
+     * @returns {Promise<Object>} Available images
+     */
+    async listImages() {
+        await this._ensureInitialized();
+        return await this.validator.getAvailableImages();
     }
 
     /**
@@ -325,6 +334,14 @@ class FoundryValidator {
                 type: 'boolean',
                 description: 'List available object types (use with -s for specific system)'
             },
+            'list-images': {
+                type: 'boolean',
+                description: 'List available images from core and system folders'
+            },
+            'image-pattern': {
+                type: 'string',
+                description: 'Pattern for filtering images (supports wildcards: *, ?)'
+            },
             schema: {
                 type: 'boolean',
                 description: 'Extract and display the expected schema'
@@ -376,6 +393,10 @@ class FoundryValidator {
                 type: 'boolean',
                 short: 'v',
                 description: 'Enable verbose output'
+            },
+            'no-image': {
+                type: 'boolean',
+                description: 'Skip image validation (allow creation without images)'
             },
             help: {
                 type: 'boolean',
@@ -432,11 +453,14 @@ OPTIONS:
   -d, --delete                    Delete a document by ID
   --id <id>                       Document ID for update/delete operations
   -v, --verbose                   Enable verbose output
+  --no-image                      Skip image validation (allow creation without images)
   -h, --help                      Show this help message
 
   --list-systems                  List all available game systems
   --list-worlds                   List available worlds
   --list-types                    List available object types (use with -s for specific system)
+  --list-images                   List available images from core and system folders
+  --image-pattern <pattern>       Filter images by pattern (supports wildcards: *, ?)
   --schema                        Extract and display expected schema
 
   --set-admin-password            Set administrator password
@@ -586,6 +610,65 @@ ${docType}:`);
                 process.exit(0);
             }
 
+            // Handle list images
+            if (args['list-images']) {
+                const pattern = args['image-pattern'] || '*'; // Default to all if no pattern
+                console.log(`\n🖼️  Discovering available images${pattern !== '*' ? ` matching "${pattern}"` : ''}...`);
+                const images = await this.manager.listImages();
+                
+                // Helper function to filter images by pattern
+                const filterByPattern = (imageList, searchPattern) => {
+                    if (searchPattern === '*' || !searchPattern) return imageList;
+                    const regex = new RegExp(searchPattern.replace(/\*/g, '.*').replace(/\?/g, '.'), 'i');
+                    return imageList.filter(img => regex.test(img));
+                };
+                
+                const filteredCore = filterByPattern(images.core, pattern);
+                const filteredSystem = filterByPattern(images.system, pattern);
+                const filteredUser = filterByPattern(images.user, pattern);
+                
+                console.log(`\n📋 Available Images for ${images.metadata.systemTitle || 'FoundryVTT'}:`);
+                
+                if (filteredCore.length > 0) {
+                    console.log(`\n🎯 Core FoundryVTT Icons (${filteredCore.length}):`);
+                    filteredCore.forEach(img => {
+                        console.log(`   - ${img}`);
+                    });
+                }
+                
+                if (filteredSystem.length > 0) {
+                    console.log(`\n🎲 System Icons (${filteredSystem.length}):`);
+                    filteredSystem.forEach(img => {
+                        console.log(`   - ${img}`);
+                    });
+                }
+                
+                if (filteredUser.length > 0) {
+                    console.log(`\n👤 User Images (${filteredUser.length}):`);
+                    filteredUser.forEach(img => {
+                        console.log(`   - ${img}`);
+                    });
+                }
+                
+                const totalFiltered = filteredCore.length + filteredSystem.length + filteredUser.length;
+                const totalImages = images.core.length + images.system.length + images.user.length;
+                
+                if (pattern !== '*' && pattern) {
+                    console.log(`\n📊 Found ${totalFiltered} images matching "${pattern}" (${totalImages} total available)`);
+                } else {
+                    console.log(`\n📊 Total available images: ${totalImages}`);
+                }
+                
+                if (totalFiltered === 0 && pattern !== '*') {
+                    console.log(`\n💡 No images found matching "${pattern}". Try a different pattern or use --list-images to see all available images.`);
+                } else {
+                    console.log('\n💡 Use any of these image paths in your document data');
+                }
+                
+                await this.manager.cleanup();
+                process.exit(0);
+            }
+
             // Handle read/search documents
             if (args.read) {
                 if (!args.type) {
@@ -690,7 +773,7 @@ ${docType}:`);
                 console.log(`
 ➕ Creating ${args.type} document...`);
                 await this.manager._ensureInitialized();
-                const result = await this.manager.worldManager.create(args.type, jsonData);
+                const result = await this.manager.worldManager.create(args.type, jsonData, { noImage: args['no-image'] });
                 console.log(`✅ Document created successfully! ID: ${result.id}, Name: ${result.name}`);
                 await this.manager.cleanup();
                 process.exit(0);
@@ -794,7 +877,7 @@ ${docType}:`);
 
             // Validate
             console.log(`\n🔍 Validating ${args.type}...`);
-            const result = await this.manager.validateDocument(args.type, jsonData);
+            const result = await this.manager.validateDocument(args.type, jsonData, { noImage: args['no-image'] });
 
             if (result.success) {
                 console.log(`✅ Validation successful!`);

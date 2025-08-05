@@ -441,18 +441,237 @@ export class FoundryPuppeteerValidator {
     }
 
     /**
+     * Get available images from various sources using FoundryVTT's FilePicker API
+     * @returns {Promise<Object>} Available images organized by source
+     */
+    async getAvailableImages() {
+        await this._ensureInitialized();
+
+        return await this.serverManager.page.evaluate(async () => {
+            const images = {
+                core: [],
+                system: [],
+                user: [],
+                metadata: {
+                    systemId: window.game?.system?.id,
+                    systemTitle: window.game?.system?.title
+                }
+            };
+
+            // Helper to browse a directory for images (non-recursive for performance)
+            const browseDirectoryImages = async (source, path = "") => {
+                try {
+                    const response = await FilePicker.browse(source, path);
+                    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'];
+                    const foundImages = [];
+                    
+                    // Add image files from current directory
+                    if (response.files) {
+                        for (const file of response.files) {
+                            const ext = file.toLowerCase().substring(file.lastIndexOf('.'));
+                            if (imageExtensions.includes(ext)) {
+                                // Convert to FoundryVTT-style path
+                                let relativePath = file;
+                                if (source === 'data') {
+                                    relativePath = file.replace(/^.*\/Data\//, '');
+                                } else if (source === 'public') {
+                                    relativePath = file.replace(/^.*\/public\//, '');
+                                }
+                                foundImages.push(relativePath);
+                            }
+                        }
+                    }
+                    
+                    return { images: foundImages, dirs: response.dirs || [] };
+                } catch (error) {
+                    console.log(`Could not browse ${source}:${path} - ${error.message}`);
+                    return { images: [], dirs: [] };
+                }
+            };
+
+            // Browse core FoundryVTT icons - check key directories
+            const coreDirectories = [
+                'icons/svg',
+                'icons/commodities',
+                'icons/weapons', 
+                'icons/equipment',
+                'icons/creatures',
+                'icons/environment',
+                'icons/magic',
+                'icons/consumables',
+                'icons/containers',
+                'icons/tools',
+                'icons/sundries',
+                'icons/skills'
+            ];
+
+            for (const dir of coreDirectories) {
+                try {
+                    const result = await browseDirectoryImages('public', dir);
+                    images.core.push(...result.images);
+                    
+                    // Browse one level of subdirectories for each main category
+                    for (const subdir of result.dirs.slice(0, 10)) { // Limit to prevent timeouts
+                        const subResult = await browseDirectoryImages('public', subdir);
+                        images.core.push(...subResult.images);
+                    }
+                } catch (error) {
+                    console.log(`Could not browse core directory ${dir}:`, error.message);
+                }
+            }
+
+            // Browse system-specific icons
+            if (window.game?.system?.id) {
+                const systemId = window.game.system.id;
+                const systemDirectories = [
+                    `systems/${systemId}/icons`,
+                    `systems/${systemId}/assets`,
+                    `systems/${systemId}/ui`,
+                    `systems/${systemId}`
+                ];
+
+                for (const dir of systemDirectories) {
+                    try {
+                        const result = await browseDirectoryImages('data', dir);
+                        images.system.push(...result.images);
+                        
+                        // Browse one level of subdirectories
+                        for (const subdir of result.dirs.slice(0, 5)) { // Limit for performance
+                            const subResult = await browseDirectoryImages('data', subdir);
+                            images.system.push(...subResult.images);
+                        }
+                    } catch (error) {
+                        console.log(`Could not browse system directory ${dir}:`, error.message);
+                    }
+                }
+            }
+
+            // Browse user data icons
+            const userDirectories = ['icons', 'assets/images', 'ui/icons'];
+            for (const dir of userDirectories) {
+                try {
+                    const result = await browseDirectoryImages('data', dir);
+                    images.user.push(...result.images);
+                } catch (error) {
+                    console.log(`Could not browse user directory ${dir}:`, error.message);
+                }
+            }
+
+            // Remove duplicates
+            images.core = [...new Set(images.core)];
+            images.system = [...new Set(images.system)];
+            images.user = [...new Set(images.user)];
+
+            return images;
+        });
+    }
+
+    /**
+     * Validate that an image path exists and is accessible
+     * @param {string} imagePath - Image path to validate
+     * @returns {Promise<boolean>} True if image exists
+     */
+    async validateImageExists(imagePath) {
+        if (!imagePath) return false;
+
+        await this._ensureInitialized();
+
+        return await this.serverManager.page.evaluate(async (path) => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(true);
+                img.onerror = () => resolve(false);
+                img.src = path;
+                // Timeout after 3 seconds
+                setTimeout(() => resolve(false), 3000);
+            });
+        }, imagePath);
+    }
+
+    /**
+     * Validate image requirements for document creation
+     * @param {Object} documentData - Document data to validate
+     * @param {Object} options - Validation options
+     * @param {boolean} options.noImage - Skip image validation
+     * @returns {Promise<Object>} Validation result
+     */
+    async validateImageRequirements(documentData, options = {}) {
+        // Skip image validation if explicitly disabled
+        if (options.noImage) {
+            return { success: true, message: 'Image validation skipped' };
+        }
+
+        const defaultImages = [
+            'icons/svg/mystery-man.svg',
+            'icons/svg/item-bag.svg',
+            'icons/svg/mystery-man-black.svg'
+        ];
+
+        // Check if image is missing or is a default placeholder
+        if (!documentData.img || defaultImages.includes(documentData.img)) {
+            const availableImages = await this.getAvailableImages();
+            const totalImages = availableImages.core.length + availableImages.system.length + availableImages.user.length;
+            
+            throw new ValidationError(
+                `Image is required for document creation. Found ${totalImages} available images. Use --list-images to see available images.`,
+                'img',
+                'MISSING_IMAGE'
+            );
+        }
+
+        // Validate that the specified image actually exists
+        const imageExists = await this.validateImageExists(documentData.img);
+        if (!imageExists) {
+            throw new ValidationError(
+                `Image not found: ${documentData.img}. Use --list-images to see available images.`,
+                'img',
+                'IMAGE_NOT_FOUND'
+            );
+        }
+
+        return { 
+            success: true, 
+            message: 'Image validation passed',
+            imagePath: documentData.img 
+        };
+    }
+
+    /**
      * Validate a document using FoundryVTT's validation system
      * @param {string} documentType - Type of document (Item, Actor, etc.)
      * @param {Object} documentData - Document data to validate
+     * @param {Object} options - Validation options
+     * @param {boolean} options.noImage - Skip image validation
      * @returns {Promise<Object>} Validation result with success status and validated data
      */
-    async validateDocument(documentType, documentData) {
+    async validateDocument(documentType, documentData, options = {}) {
         await this._ensureInitialized();
 
         console.log(`🔍 Validating ${documentType}: ${documentData.name || 'Unnamed'}`);
 
+        // Perform image validation first (for creation only, not updates)
+        if (!options.skipImageValidation) {
+            await this.validateImageRequirements(documentData, options);
+        }
+
         try {
-            const result = await this.serverManager.page.evaluate(async (docType, docData, timeout) => {
+            // Map the document type before evaluation to ensure proper class lookup
+            const availableTypes = await this.getAvailableTypes();
+            
+            let mappedDocumentType = documentType;
+            let originalType = documentType;
+            
+            // If it's a subtype, map to the parent document type
+            for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
+                if (subtypes[documentType]) {
+                    mappedDocumentType = docType;
+                    break;
+                }
+            }
+            
+            console.log(`🔗 Type mapping: ${originalType} → ${mappedDocumentType}`);
+            
+            const result = await this.serverManager.page.evaluate(async (docType, docData, timeout, subType) => {
                 // Helper function to extract validation errors
                 const extractValidationErrors = (error) => {
                     const errors = [];
@@ -498,6 +717,11 @@ export class FoundryPuppeteerValidator {
                         } else {
                             // Try generic CONFIG lookup
                             DocumentClass = window.CONFIG?.[normalizedType]?.documentClass;
+                        }
+                        
+                        // If we have a subtype, ensure the type field is set correctly
+                        if (subType && subType !== docType) {
+                            docData.type = subType;
                         }
                         
                         if (!DocumentClass) {
@@ -554,17 +778,8 @@ export class FoundryPuppeteerValidator {
                             keepId: true
                         });
                         
-                        // Use validateUpdate to check the data
-                        const validation = doc.validateUpdate(docData, {});
-                        if (validation === false) {
-                            resolve({
-                                success: false,
-                                error: 'Document validation failed',
-                                code: 'VALIDATION_FAILED',
-                                documentType: docType
-                            });
-                            return;
-                        }
+                        // The document creation itself validates the data
+                        // If we get here without an error, the validation passed
                         
                         // Get the validated document data
                         const validatedData = doc.toObject();
@@ -607,7 +822,7 @@ export class FoundryPuppeteerValidator {
                 // Race between validation and timeout
                 return await Promise.race([validationPromise, timeoutPromise]);
                 
-            }, documentType, documentData, this.validationTimeout);
+            }, mappedDocumentType, documentData, this.validationTimeout, originalType);
 
             if (result.success) {
                 console.log(`✅ Validation successful using ${result.documentClass}`);

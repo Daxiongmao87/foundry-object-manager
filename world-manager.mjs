@@ -82,8 +82,12 @@ export class WorldManager {
     }
 
     // Placeholder for create, update, delete methods
-    async create(documentType, data) {
+    async create(documentType, data, options = {}) {
         console.log(`Creating ${documentType} document with data:`, data);
+        
+        // Validate the document first (includes image validation unless noImage is true)
+        await this.validator.validateDocument(documentType, data, options);
+        
         const page = this.validator.serverManager.page;
         if (!page) {
             throw new Error("Puppeteer page not available.");
