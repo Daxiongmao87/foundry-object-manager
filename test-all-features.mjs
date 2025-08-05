@@ -33,6 +33,8 @@ let serverManager;
 let validator;
 let testResults = [];
 let createdObjectId = null; // To store the ID of the object created during tests for deletion
+let createdJournalEntryId = null;
+let createdRollTableId = null;
 
 // --- Helper Functions ---
 function log(message, type = 'info') {
@@ -116,6 +118,20 @@ async function setup() {
 async function teardown() {
     log('🧹 Cleaning up test environment...');
     if (serverManager) {
+        // Delete created objects
+        if (createdObjectId) {
+            log(`Deleting created Actor with ID: ${createdObjectId}`);
+            await serverManager.worldManager.deleteObject(testWorldId, 'Actor', createdObjectId).catch(e => log(`Failed to delete Actor ${createdObjectId}: ${e.message}`, 'error'));
+        }
+        if (createdJournalEntryId) {
+            log(`Deleting created JournalEntry with ID: ${createdJournalEntryId}`);
+            await serverManager.worldManager.deleteObject(testWorldId, 'JournalEntry', createdJournalEntryId).catch(e => log(`Failed to delete JournalEntry ${createdJournalEntryId}: ${e.message}`, 'error'));
+        }
+        if (createdRollTableId) {
+            log(`Deleting created RollTable with ID: ${createdRollTableId}`);
+            await serverManager.worldManager.deleteObject(testWorldId, 'RollTable', createdRollTableId).catch(e => log(`Failed to delete RollTable ${createdRollTableId}: ${e.message}`, 'error'));
+        }
+
         await serverManager.cleanup();
     }
     // Clean up temporary JSON files
@@ -145,7 +161,7 @@ function generateReport() {
     });
     
     const passedTests = testResults.filter(r => r.status === 'PASS').length;
-    const failedTests = testResults.filter(r => r.status === 'FAIL').length;
+    const failedTests = testResults.filter(r.status === 'FAIL').length;
     
     console.log(`📈 SUMMARY: ${passedTests} passed, ${failedTests} failed`);
     
@@ -162,21 +178,20 @@ function generateReport() {
 // --- Feature Test Functions ---
 
 async function testListSystemObjectTypes() {
-    const result = await validator.listSystemObjectTypes();
-    if (!result.success || !Array.isArray(result.types) || result.types.length === 0) {
+    const result = await validator.getSystemObjectTypes();
+    if (!result || !Object.keys(result).length) {
         throw new Error(`Expected to list object types, but got: ${JSON.stringify(result)}`);
     }
-    log(`Found ${result.types.length} object types. Example: ${result.types[0]}`);
+    log(`Found ${Object.keys(result).length} object types. Example: ${Object.keys(result)[0]}`);
 }
 
 async function testGetObjectSchema() {
     const objectType = 'Actor';
-    const result = await validator.getObjectSchema(objectType);
-    if (!result.success || !result.schema) {
+    const result = await validator.getSchema(objectType);
+    if (!result.success || !result.fields) {
         throw new Error(`Expected to get schema for ${objectType}, but got: ${JSON.stringify(result)}`);
     }
-    log(`Retrieved schema for ${objectType}. (Note: This is a mock schema as FoundryVTT does not expose schemas directly via UI.)`);
-    // console.log(JSON.stringify(result.schema, null, 2)); // Uncomment to see the mock schema
+    log(`Retrieved schema for ${objectType}. Field count: ${Object.keys(result.fields).length}`);
 }
 
 async function testListObjects() {
@@ -204,7 +219,7 @@ async function testCreateObject() {
         name: 'Test Actor CLI',
         type: 'character',
         img: 'icons/svg/mystery-man.svg',
-        data: {
+        system: {
             attributes: {
                 hp: { value: 10, max: 10 }
             }
@@ -237,7 +252,7 @@ async function testUpdateObject() {
     const objectType = 'Actor';
     const updateData = {
         name: 'Test Actor CLI Updated',
-        data: {
+        system: {
             attributes: {
                 hp: { value: 15 }
             }
@@ -255,7 +270,7 @@ async function testUpdateObject() {
 
     // Verify update by retrieving and checking name/hp
     const retrieveResult = await validator.searchObjects(testWorldId, objectType, { id: createdObjectId });
-    if (!retrieveResult.success || retrieveResult.totalFound !== 1 || retrieveResult.documents[0].name !== updateData.name || retrieveResult.documents[0].data.attributes.hp.value !== updateData.data.attributes.hp.value) {
+    if (!retrieveResult.success || retrieveResult.totalFound !== 1 || retrieveResult.documents[0].name !== updateData.name || retrieveResult.documents[0].system.attributes.hp.value !== updateData.system.attributes.hp.value) {
         throw new Error(`Failed to verify update of object with ID ${createdObjectId}`);
     }
     log(`Verified update of object with ID: ${createdObjectId}`);
@@ -281,6 +296,55 @@ async function testDeleteObject() {
     log(`Verified deletion of object with ID: ${createdObjectId}`);
 }
 
+async function testCreateJournalEntry() {
+    const objectType = 'JournalEntry';
+    const objectData = {
+        name: 'Test Journal Entry CLI',
+        content: 'This is a test journal entry created by the CLI.',
+        img: 'icons/svg/book.svg' // A common default image for JournalEntry
+    };
+
+    const result = await validator.createObject(testWorldId, objectType, objectData);
+    if (!result.success || !result.documentId) {
+        throw new Error(`Expected to create ${objectType}, but got: ${JSON.stringify(result)}`);
+    }
+    createdJournalEntryId = result.documentId;
+    log(`Successfully created ${objectType} with ID: ${createdJournalEntryId}`);
+
+    // Verify creation by attempting to retrieve it
+    const retrieveResult = await validator.searchObjects(testWorldId, objectType, { id: createdJournalEntryId });
+    if (!retrieveResult.success || retrieveResult.totalFound !== 1 || retrieveResult.documents[0]._id !== createdJournalEntryId) {
+        throw new Error(`Failed to verify creation of JournalEntry with ID ${createdJournalEntryId}`);
+    }
+    log(`Verified creation of JournalEntry with ID: ${createdJournalEntryId}`);
+}
+
+async function testCreateRollTable() {
+    const objectType = 'RollTable';
+    const objectData = {
+        name: 'Test Roll Table CLI',
+        img: 'icons/svg/dice-target.svg', // A common default image for RollTable
+        results: [
+            { text: 'Result 1', weight: 1 },
+            { text: 'Result 2', weight: 1 }
+        ]
+    };
+
+    const result = await validator.createObject(testWorldId, objectType, objectData);
+    if (!result.success || !result.documentId) {
+        throw new Error(`Expected to create ${objectType}, but got: ${JSON.stringify(result)}`);
+    }
+    createdRollTableId = result.documentId;
+    log(`Successfully created ${objectType} with ID: ${createdRollTableId}`);
+
+    // Verify creation by attempting to retrieve it
+    const retrieveResult = await validator.searchObjects(testWorldId, objectType, { id: createdRollTableId });
+    if (!retrieveResult.success || retrieveResult.totalFound !== 1 || retrieveResult.documents[0]._id !== createdRollTableId) {
+        throw new Error(`Failed to verify creation of RollTable with ID ${createdRollTableId}`);
+    }
+    log(`Verified creation of RollTable with ID: ${createdRollTableId}`);
+}
+
 // --- Main Execution ---
 (async () => {
     await setup();
@@ -289,9 +353,11 @@ async function testDeleteObject() {
     await runTest('2. Get object schema for specific types', testGetObjectSchema);
     await runTest('3. List objects of specific type from world', testListObjects);
     await runTest('4. Search objects from world', testSearchObjects);
-    await runTest('5. Create new objects', testCreateObject);
-    await runTest('6. Update existing objects', testUpdateObject);
-    await runTest('7. Delete objects', testDeleteObject);
+    await runTest('5. Create new Actor object', testCreateObject);
+    await runTest('6. Update existing Actor object', testUpdateObject);
+    await runTest('7. Delete Actor object', testDeleteObject);
+    await runTest('8. Create new JournalEntry object', testCreateJournalEntry);
+    await runTest('9. Create new RollTable object', testCreateRollTable);
 
     await teardown();
     generateReport();

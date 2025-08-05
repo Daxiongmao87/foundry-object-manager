@@ -173,23 +173,48 @@ export class FoundryManager {
     async validateDocument(type, data, options = {}) {
         await this._ensureInitialized();
 
-        // Determine document type (Item vs Actor)
         const availableTypes = await this.validator.getAvailableTypes();
         
         let documentType = null;
-        // First, check if the type itself is a top-level document type (e.g., Scene, JournalEntry)
-        if (availableTypes.types[type]) {
-            documentType = type;
-        } else if (availableTypes.types.Item[type]) {
-            documentType = 'Item';
-        } else if (availableTypes.types.Actor[type]) {
+        let subtype = null; // To store the actual subtype if found
+
+        // Normalize the input type for comparison with top-level document types
+        const normalizedInputType = type.split('-')
+                                        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                        .join('');
+
+        // 1. Check if the input type is a direct top-level document type (e.g., "JournalEntry", "RollTable")
+        //    This checks against the capitalized names like "JournalEntry", "RollTable"
+        if (availableTypes.types.hasOwnProperty(normalizedInputType)) {
+            documentType = normalizedInputType;
+            // If it's a top-level document type, its 'subtype' is often itself or a default
+            // For JournalEntry/RollTable, the 'subtype' in the manifest is often the same as the docType
+            // We need to find the actual key used in the 'other' category
+            if (availableTypes.types[normalizedInputType] && Object.keys(availableTypes.types[normalizedInputType]).length > 0) {
+                subtype = Object.keys(availableTypes.types[normalizedInputType])[0]; // Take the first (and usually only) subtype
+            } else {
+                subtype = type; // Fallback to original type if no specific subtype is listed
+            }
+        } 
+        // 2. Check if it's an Actor subtype
+        else if (availableTypes.types.Actor && availableTypes.types.Actor[type]) {
             documentType = 'Actor';
-        } else {
-            // Check other document types by iterating through their subtypes
-            for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
-                // Check if the provided type matches a subtype key (which might be lowercase)
-                if (subtypes[type] || subtypes[type.toLowerCase()]) {
-                    documentType = docType;
+            subtype = type;
+        } 
+        // 3. Check if it's an Item subtype
+        else if (availableTypes.types.Item && availableTypes.types.Item[type]) {
+            documentType = 'Item';
+            subtype = type;
+        } 
+        // 4. Check other document types (e.g., JournalEntry, RollTable, Scene, Macro, Playlist)
+        //    This handles cases where the input 'type' might be a lowercase version of a top-level type
+        //    or a subtype within a top-level 'other' document type.
+        else {
+            for (const [docTypeKey, subtypesMap] of Object.entries(availableTypes.types.other || {})) {
+                // Check if the input type matches a key in the subtypes map (e.g., 'journalentry' in 'other.journalentry')
+                if (subtypesMap.hasOwnProperty(type)) {
+                    documentType = docTypeKey.charAt(0).toUpperCase() + docTypeKey.slice(1); // Convert 'journalentry' to 'Journalentry'
+                    subtype = type;
                     break;
                 }
             }
@@ -197,15 +222,15 @@ export class FoundryManager {
 
         if (!documentType) {
             throw new ValidationError(
-                `Unknown type: ${type}. Use --list-types to see available types.`,
+                `Unknown type: ${type}. Use --list-types to see available types.`, 
                 'type',
                 'UNKNOWN_TYPE'
             );
         }
 
         // Ensure the data has the correct type field
-        if (!data.type) {
-            data.type = type;
+        if (subtype && !data.type) {
+            data.type = subtype;
         }
 
         return await this.validator.validateDocument(documentType, data, options);
@@ -219,23 +244,41 @@ export class FoundryManager {
     async getSchema(type) {
         await this._ensureInitialized();
 
-        // Determine document type
         const availableTypes = await this.validator.getAvailableTypes();
         
         let documentType = null;
-        // First, check if the type itself is a top-level document type (e.g., Scene, JournalEntry)
-        if (availableTypes.types[type]) {
-            documentType = type;
-        } else if (availableTypes.types.Item[type]) {
-            documentType = 'Item';
-        } else if (availableTypes.types.Actor[type]) {
+        let subtype = null;
+
+        // Normalize the input type for comparison with top-level document types
+        const normalizedInputType = type.split('-')
+                                        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                        .join('');
+
+        // 1. Check if the input type is a direct top-level document type (e.g., "JournalEntry", "RollTable")
+        if (availableTypes.types.hasOwnProperty(normalizedInputType)) {
+            documentType = normalizedInputType;
+            if (availableTypes.types[normalizedInputType] && Object.keys(availableTypes.types[normalizedInputType]).length > 0) {
+                subtype = Object.keys(availableTypes.types[normalizedInputType])[0];
+            } else {
+                subtype = type;
+            }
+        } 
+        // 2. Check if it's an Actor subtype
+        else if (availableTypes.types.Actor && availableTypes.types.Actor[type]) {
             documentType = 'Actor';
-        } else {
-            // Check other document types by iterating through their subtypes
-            for (const [docType, subtypes] of Object.entries(availableTypes.types)) {
-                // Check if the provided type matches a subtype key (which might be lowercase)
-                if (subtypes[type] || subtypes[type.toLowerCase()]) {
-                    documentType = docType;
+            subtype = type;
+        } 
+        // 3. Check if it's an Item subtype
+        else if (availableTypes.types.Item && availableTypes.types.Item[type]) {
+            documentType = 'Item';
+            subtype = type;
+        } 
+        // 4. Check other document types
+        else {
+            for (const [docTypeKey, subtypesMap] of Object.entries(availableTypes.types.other || {})) {
+                if (subtypesMap.hasOwnProperty(type)) {
+                    documentType = docTypeKey.charAt(0).toUpperCase() + docTypeKey.slice(1);
+                    subtype = type;
                     break;
                 }
             }
@@ -243,13 +286,13 @@ export class FoundryManager {
 
         if (!documentType) {
             throw new ValidationError(
-                `Unknown type: ${type}. Use --list-types to see available types.`,
+                `Unknown type: ${type}. Use --list-types to see available types.`, 
                 'type',
                 'UNKNOWN_TYPE'
             );
         }
 
-        return await this.validator.getSchema(documentType, type);
+        return await this.validator.getSchema(documentType, subtype || type); // Pass subtype if found, else original type
     }
 
     /**
@@ -558,7 +601,7 @@ EXIT CODES:
 
         try {
             // Create manager
-            this.manager = new FoundryManager({ 
+            this.manager = new FoundryManager({
                 verbose: args.verbose,
                 server: {
                     world: args.world
@@ -675,8 +718,7 @@ ${docType}:`);
                     console.error('Error: Document type (-t) is required for read/search operations.');
                     process.exit(1);
                 }
-                console.log(`
-🔍 Searching for ${args.type} documents...`);
+                console.log(`\n🔍 Searching for ${args.type} documents...`);
                 await this.manager._ensureInitialized();
                 
                 try {
@@ -770,8 +812,7 @@ ${docType}:`);
                     process.exit(1);
                 }
 
-                console.log(`
-➕ Creating ${args.type} document...`);
+                console.log(`\n➕ Creating ${args.type} document...`);
                 await this.manager._ensureInitialized();
                 const result = await this.manager.worldManager.create(args.type, jsonData, { noImage: args['no-image'] });
                 console.log(`✅ Document created successfully! ID: ${result.id}, Name: ${result.name}`);
@@ -823,8 +864,7 @@ ${docType}:`);
                     process.exit(1);
                 }
 
-                console.log(`
-🗑️ Deleting ${args.type} document with ID: ${args.id}...`);
+                console.log(`\n🗑️ Deleting ${args.type} document with ID: ${args.id}...`);
                 await this.manager._ensureInitialized();
                 const result = await this.manager.worldManager.delete(args.type, args.id);
                 console.log(`✅ Document with ID: ${result.id} deleted successfully!`);

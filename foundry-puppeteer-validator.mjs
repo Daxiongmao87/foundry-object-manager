@@ -706,17 +706,35 @@ export class FoundryPuppeteerValidator {
                 const validationPromise = new Promise((resolve) => {
                     try {
                         // Normalize document type to proper case
-                        const normalizedType = docType.charAt(0).toUpperCase() + docType.slice(1).toLowerCase();
+                        // For types like JournalEntry, RollTable, ensure correct capitalization
+                        let normalizedType = docType;
+                        if (normalizedType.toLowerCase() === 'journalentry') {
+                            normalizedType = 'JournalEntry';
+                        } else if (normalizedType.toLowerCase() === 'rolltable') {
+                            normalizedType = 'RollTable';
+                        } else {
+                            normalizedType = normalizedType.charAt(0).toUpperCase() + normalizedType.slice(1).toLowerCase();
+                        }
                         
                         // Get the appropriate document class
-                        let DocumentClass;
-                        if (normalizedType === 'Item') {
-                            DocumentClass = window.CONFIG?.Item?.documentClass || window.Item;
-                        } else if (normalizedType === 'Actor') {
-                            DocumentClass = window.CONFIG?.Actor?.documentClass || window.Actor;
-                        } else {
-                            // Try generic CONFIG lookup
-                            DocumentClass = window.CONFIG?.[normalizedType]?.documentClass;
+                        console.log(`DEBUG: Attempting to get DocumentClass for ${normalizedType}`);
+                        let DocumentClass = window.CONFIG?.[normalizedType]?.documentClass || window[normalizedType];
+                        
+                        // Fallback for cases where documentClass might be nested or not directly on CONFIG
+                        if (!DocumentClass) {
+                            for (const key in window.CONFIG) {
+                                if (key.toLowerCase() === normalizedType.toLowerCase() && window.CONFIG[key].documentClass) {
+                                    DocumentClass = window.CONFIG[key].documentClass;
+                                    console.log(`DEBUG: Found DocumentClass via CONFIG iteration: ${key}`);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Final fallback: try to find it directly on the window object if not found in CONFIG
+                        if (!DocumentClass && window[normalizedType]) {
+                            DocumentClass = window[normalizedType];
+                            console.log(`DEBUG: Found DocumentClass directly on window: ${normalizedType}`);
                         }
                         
                         // If we have a subtype, ensure the type field is set correctly
@@ -725,11 +743,31 @@ export class FoundryPuppeteerValidator {
                         }
                         
                         if (!DocumentClass) {
+                            // Try to get available document types from CONFIG and game collections
+                            const availableTypes = {};
+                            
+                            // Check CONFIG for types with documentClass (regardless of typeLabels)
+                            for (const [docType, config] of Object.entries(window.CONFIG || {})) {
+                                if (config.documentClass) {
+                                    availableTypes[docType] = config.typeLabels ? Object.keys(config.typeLabels) : ['base'];
+                                }
+                            }
+                            
+                            // Also check direct window availability for core document types
+                            const coreTypes = ['Scene', 'JournalEntry', 'RollTable', 'Macro', 'Playlist', 'User', 'Folder'];
+                            for (const coreType of coreTypes) {
+                                if (window[coreType] && !availableTypes[coreType]) {
+                                    availableTypes[coreType] = ['base'];
+                                }
+                            }
+                            
                             resolve({
                                 success: false,
                                 error: `Document class not available for type: ${docType}`,
                                 code: 'INVALID_DOCUMENT_TYPE',
-                                documentType: docType
+                                documentType: docType,
+                                availableTypes: availableTypes,
+                                helpText: `Available document types: ${Object.keys(availableTypes).join(', ')}`
                             });
                             return;
                         }
@@ -756,23 +794,55 @@ export class FoundryPuppeteerValidator {
                             });
                             return;
                         }
-                        
-                        // Check if type is valid for this document class
-                        const validTypes = window.CONFIG?.[normalizedType]?.typeLabels;
-                        if (validTypes && !validTypes[docData.type]) {
-                            resolve({
-                                success: false,
-                                error: `Invalid type '${docData.type}' for ${normalizedType}`,
-                                code: 'INVALID_TYPE',
-                                field: 'type',
-                                validTypes: Object.keys(validTypes),
-                                documentType: docType
-                            });
-                            return;
+
+                        // Special handling for top-level documents like JournalEntry and RollTable
+                        if (normalizedType === 'JournalEntry' || normalizedType === 'RollTable') {
+                            if (docData.type !== normalizedType) {
+                                resolve({
+                                    success: false,
+                                    error: `Invalid type '${docData.type}' for ${normalizedType}. Expected '${normalizedType}'.`,
+                                    code: 'INVALID_TYPE',
+                                    field: 'type',
+                                    validTypes: [normalizedType],
+                                    documentType: docType
+                                });
+                                return;
+                            }
+                        } else {
+                            // Original logic for documents with subtypes
+                            const validTypes = window.CONFIG?.[normalizedType]?.typeLabels;
+                            if (validTypes && Object.keys(validTypes).length > 0) {
+                                if (!validTypes[docData.type]) {
+                                    resolve({
+                                        success: false,
+                                        error: `Invalid type '${docData.type}' for ${normalizedType}`,
+                                        code: 'INVALID_TYPE',
+                                        field: 'type',
+                                        validTypes: Object.keys(validTypes),
+                                        documentType: docType
+                                    });
+                                    return;
+                                }
+                            } else {
+                                // Fallback for other cases where typeLabels might be missing or empty
+                                if (docData.type !== normalizedType) {
+                                    resolve({
+                                        success: false,
+                                        error: `Invalid type '${docData.type}' for ${normalizedType}. Expected '${normalizedType}'.`,
+                                        code: 'INVALID_TYPE',
+                                        field: 'type',
+                                        validTypes: [normalizedType],
+                                        documentType: docType
+                                    });
+                                    return;
+                                }
+                            }
                         }
                         
+                        const dataToValidate = { ...docData }; // Re-introducing this line
+
                         // Create document with validation
-                        const doc = new DocumentClass(docData, { 
+                        const doc = new DocumentClass(dataToValidate, { 
                             strict: true,
                             partial: false,
                             keepId: true
@@ -807,11 +877,52 @@ export class FoundryPuppeteerValidator {
                         // Parse validation errors
                         const validationErrors = extractValidationErrors(error);
                         
+                        // Try to get schema information to help the user
+                        let schemaInfo = null;
+                        try {
+                            if (DocumentClass?.schema) {
+                                const schema = DocumentClass.schema;
+                                schemaInfo = {
+                                    requiredFields: [],
+                                    allFields: Object.keys(schema.fields || {}),
+                                    example: {}
+                                };
+                                
+                                // Build example based on schema
+                                for (const [fieldName, field] of Object.entries(schema.fields || {})) {
+                                    if (field.required) {
+                                        schemaInfo.requiredFields.push(fieldName);
+                                    }
+                                    
+                                    // Add to example
+                                    if (fieldName === 'name') {
+                                        schemaInfo.example[fieldName] = 'Example Name';
+                                    } else if (fieldName === 'type') {
+                                        const typeLabels = window.CONFIG?.[normalizedType]?.typeLabels;
+                                        if (typeLabels) {
+                                            schemaInfo.example[fieldName] = Object.keys(typeLabels)[0];
+                                        }
+                                    } else if (fieldName === 'img') {
+                                        schemaInfo.example[fieldName] = 'icons/svg/example.svg';
+                                    } else if (field.type?.name === 'String') {
+                                        schemaInfo.example[fieldName] = 'string_value';
+                                    } else if (field.type?.name === 'Number') {
+                                        schemaInfo.example[fieldName] = 0;
+                                    } else if (field.type?.name === 'Boolean') {
+                                        schemaInfo.example[fieldName] = false;
+                                    }
+                                }
+                            }
+                        } catch (schemaError) {
+                            // Schema extraction failed, continue without it
+                        }
+                        
                         resolve({
                             success: false,
                             error: error.message,
                             code: 'VALIDATION_ERROR',
                             validationErrors: validationErrors,
+                            schema: schemaInfo,
                             stack: error.stack,
                             documentType: docType,
                             validationError: true
@@ -833,10 +944,36 @@ export class FoundryPuppeteerValidator {
                 }
             } else {
                 console.error(`❌ Validation failed: ${result.error}`);
+                
                 if (result.validationErrors) {
                     result.validationErrors.forEach(err => {
-                        console.error(`   - Field '${err.field}': ${err.message}`);
+                        console.error(`   → ${err.message}`);
+                        if (err.field) console.error(`   → Field: ${err.field}`);
                     });
+                }
+                
+                if (result.helpText) {
+                    console.error(`   → ${result.helpText}`);
+                }
+                
+                if (result.availableTypes && Object.keys(result.availableTypes).length > 0) {
+                    console.error(`   → Available types by document class:`);
+                    for (const [docType, types] of Object.entries(result.availableTypes)) {
+                        console.error(`     - ${docType}: ${types.join(', ')}`);
+                    }
+                }
+                
+                if (result.schema) {
+                    if (result.schema.requiredFields.length > 0) {
+                        console.error(`   → Required fields: ${result.schema.requiredFields.join(', ')}`);
+                    }
+                    if (result.schema.example && Object.keys(result.schema.example).length > 0) {
+                        console.error(`   → Example JSON: ${JSON.stringify(result.schema.example, null, 2)}`);
+                    }
+                }
+                
+                if (result.code) {
+                    console.error(`   → Code: ${result.code}`);
                 }
                 
                 // Throw custom ValidationError for better error handling
@@ -932,45 +1069,52 @@ export class FoundryPuppeteerValidator {
             const objectTypes = await this.serverManager.page.evaluate((includeBase) => {
                 const types = {};
                 
-                // Get Item types
-                if (window.CONFIG?.Item?.typeLabels) {
-                    for (const [type, label] of Object.entries(window.CONFIG.Item.typeLabels)) {
-                        types[type] = {
-                            documentType: 'Item',
-                            subtype: type,
-                            label: label,
-                            hasDataModel: !!window.CONFIG.Item.dataModels?.[type]
-                        };
+                // Iterate through all document types defined in CONFIG
+                for (const [docType, config] of Object.entries(window.CONFIG || {})) {
+                    // Ensure it's a document type with a documentClass
+                    if (config.documentClass) {
+                        const normalizedDocType = docType.charAt(0).toUpperCase() + docType.slice(1);
+
+                        if (config.typeLabels && Object.keys(config.typeLabels).length > 0) {
+                            // If there are specific subtypes (e.g., for Item, Actor)
+                            for (const [subtype, label] of Object.entries(config.typeLabels)) {
+                                types[subtype] = {
+                                    documentType: normalizedDocType,
+                                    subtype: subtype,
+                                    label: label,
+                                    hasDataModel: !!config.dataModels?.[subtype]
+                                };
+                            }
+                        } else {
+                            // For document types without explicit subtypes (e.g., Scene, JournalEntry)
+                            // Use the document type itself as the "subtype" with a generic label
+                            const genericLabel = `Generic ${normalizedDocType}`;
+                            types[docType.toLowerCase()] = {
+                                documentType: normalizedDocType,
+                                subtype: null, // No specific subtype
+                                label: genericLabel,
+                                isBase: true
+                            };
+                        }
                     }
                 }
                 
-                // Get Actor types
-                if (window.CONFIG?.Actor?.typeLabels) {
-                    for (const [type, label] of Object.entries(window.CONFIG.Actor.typeLabels)) {
-                        types[type] = {
-                            documentType: 'Actor',
-                            subtype: type,
-                            label: label,
-                            hasDataModel: !!window.CONFIG.Actor.dataModels?.[type]
-                        };
-                    }
-                }
-                
-                // Add base document types if requested
+                // Add base document types if requested and not already covered
                 if (includeBase) {
-                    types.item = {
-                        documentType: 'Item',
-                        subtype: null,
-                        label: 'Generic Item',
-                        isBase: true
-                    };
-                    
-                    types.actor = {
-                        documentType: 'Actor',
-                        subtype: null,
-                        label: 'Generic Actor',
-                        isBase: true
-                    };
+                    const baseDocumentTypes = [
+                        'Item', 'Actor', 'Scene', 'JournalEntry', 'Macro', 'RollTable', 'Playlist', 'User', 'Folder'
+                    ];
+                    for (const baseType of baseDocumentTypes) {
+                        const lowerCaseBaseType = baseType.toLowerCase();
+                        if (!types[lowerCaseBaseType]) {
+                            types[lowerCaseBaseType] = {
+                                documentType: baseType,
+                                subtype: null,
+                                label: `Generic ${baseType}`,
+                                isBase: true
+                            };
+                        }
+                    }
                 }
                 
                 return types;

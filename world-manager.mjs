@@ -21,8 +21,13 @@ export class WorldManager {
                 return { error: `Game context not fully initialized. Collections not available.` };
             }
             
+            // Normalize the input type to match FoundryVTT's internal capitalization
+            const normalizedType = type.split('-')
+                                       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                       .join('');
+
             // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
-            let collection = game.collections.get(type);
+            let collection = game.collections.get(normalizedType);
             let filterByType = null;
             
             // If not a direct collection, check if it's a subtype
@@ -50,7 +55,7 @@ export class WorldManager {
             }
             
             if (!collection) {
-                return { error: `Collection for type "${type}" not found.` };
+                return { error: `Collection for type "${type}" (normalized: ${normalizedType}) not found.` };
             }
 
             let results = Array.from(collection.values());
@@ -100,34 +105,36 @@ export class WorldManager {
                     return { error: `Game context not fully initialized. Collections not available.` };
                 }
                 
-                // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
-                let collection = game.collections.get(type);
-                let actualType = type;
-                
+                // Normalize the input type to match FoundryVTT's internal capitalization
+                // e.g., "journalentry" -> "JournalEntry", "rolltable" -> "RollTable"
+                const normalizedType = type.split('-')
+                                           .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                           .join('');
+
+                let collection = game.collections.get(normalizedType);
+                let actualType = normalizedType; // Assume normalizedType is the actual document type
+
                 // If not a direct collection, check if it's a subtype
                 if (!collection) {
                     // Check if it's an Item subtype
                     if (window.CONFIG?.Item?.typeLabels?.[type]) {
                         collection = game.collections.get('Item');
                         actualType = 'Item';
-                        // Ensure the data has the correct type field
-                        docData.type = type;
+                        docData.type = type; // Original type is the subtype
                     } 
                     // Check if it's an Actor subtype
                     else if (window.CONFIG?.Actor?.typeLabels?.[type]) {
                         collection = game.collections.get('Actor');
                         actualType = 'Actor';
-                        // Ensure the data has the correct type field
-                        docData.type = type;
+                        docData.type = type; // Original type is the subtype
                     }
-                    // Check other document types
+                    // Check other document types (for subtypes within other top-level documents)
                     else {
                         for (const [docType, config] of Object.entries(window.CONFIG)) {
                             if (config?.typeLabels?.[type]) {
                                 collection = game.collections.get(docType);
                                 actualType = docType;
-                                // Ensure the data has the correct type field
-                                docData.type = type;
+                                docData.type = type; // Original type is the subtype
                                 break;
                             }
                         }
@@ -135,10 +142,38 @@ export class WorldManager {
                 }
                 
                 if (!collection) {
-                    return { error: `Collection for type "${type}" not found.` };
+                    return { error: `Collection for type "${type}" (normalized: ${normalizedType}) not found.` };
                 }
                 
-                const createdDocument = await collection.documentClass.create(docData);
+                let DocumentClass = null;
+                // Try to get from CONFIG first using the actualType
+                if (window.CONFIG?.[actualType]?.documentClass) {
+                    DocumentClass = window.CONFIG[actualType].documentClass;
+                } else {
+                    // Fallback for cases where documentClass might be nested or not directly on CONFIG
+                    for (const key in window.CONFIG) {
+                        if (key.toLowerCase() === actualType.toLowerCase() && window.CONFIG[key].documentClass) {
+                            DocumentClass = window.CONFIG[key].documentClass;
+                            break;
+                        }
+                    }
+                    if (!DocumentClass && window[actualType]) { // Fallback to global object for core types
+                        DocumentClass = window[actualType];
+                    } else if (!DocumentClass && collection?.documentClass) { // Fallback to collection's documentClass
+                        DocumentClass = collection.documentClass;
+                    }
+                }
+
+                if (!DocumentClass) {
+                    return { error: `Document class not found for type: ${actualType}` };
+                }
+                
+                // Ensure docData.type is set for all document creations
+                if (!docData.type) {
+                    docData.type = normalizedType;
+                }
+
+                const createdDocument = await DocumentClass.create(docData);
                 return { success: true, id: createdDocument.id, name: createdDocument.name };
             } catch (e) {
                 return { error: e.message || "Failed to create document." };
@@ -166,8 +201,13 @@ export class WorldManager {
                     return { error: `Game context not fully initialized. Collections not available.` };
                 }
                 
+                // Normalize the input type to match FoundryVTT's internal capitalization
+                const normalizedType = type.split('-')
+                                           .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                           .join('');
+
                 // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
-                let collection = game.collections.get(type);
+                let collection = game.collections.get(normalizedType);
                 
                 // If not a direct collection, check if it's a subtype
                 if (!collection) {
@@ -191,7 +231,7 @@ export class WorldManager {
                 }
                 
                 if (!collection) {
-                    return { error: `Collection for type "${type}" not found.` };
+                    return { error: `Collection for type "${type}" (normalized: ${normalizedType}) not found.` };
                 }
                 
                 const document = collection.get(docId);
@@ -235,8 +275,13 @@ export class WorldManager {
                     return { error: `Game context not fully initialized. Collections not available.` };
                 }
                 
+                // Normalize the input type to match FoundryVTT's internal capitalization
+                const normalizedType = type.split('-')
+                                       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                                       .join('');
+
                 // First, check if it's a direct collection name (Item, Actor, Scene, etc.)
-                let collection = game.collections.get(type);
+                let collection = game.collections.get(normalizedType);
                 
                 // If not a direct collection, check if it's a subtype
                 if (!collection) {
@@ -260,7 +305,7 @@ export class WorldManager {
                 }
                 
                 if (!collection) {
-                    return { error: `Collection for type "${type}" not found.` };
+                    return { error: `Collection for type "${type}" (normalized: ${normalizedType}) not found.` };
                 }
                 
                 const document = collection.get(docId);

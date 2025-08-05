@@ -21,13 +21,15 @@ async function testTypeResolution() {
         const types = await manager.listTypes();
         console.log(`✅ Found ${Object.keys(types.types).length} document types\n`);
         
-        // Get first few types to test
-        const testTypes = [];
+        // Get first few types to test, ensuring JournalEntry and RollTable are included
+        const testTypes = ['journalentry', 'rolltable']; // Explicitly add these for testing
+        let count = 0;
         for (const [docType, subtypes] of Object.entries(types.types)) {
             const subtypeKeys = Object.keys(subtypes);
-            if (subtypeKeys.length > 0) {
+            if (subtypeKeys.length > 0 && !testTypes.includes(subtypeKeys[0])) {
                 testTypes.push(subtypeKeys[0]); // Take first subtype
-                if (testTypes.length >= 3) break; // Test first 3 types
+                count++;
+                if (count >= 3) break; // Test first 3 *additional* types
             }
         }
         
